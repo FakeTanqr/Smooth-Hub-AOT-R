@@ -1,9 +1,13 @@
--- PATCH NOTES: Embedded keyless UI; original game features retained below.
--- No external UI downloads, authentication, or key prompt added.
--- Requested damage repeats are rate-limited, NOT a server-side 1000x damage guarantee.
--- Range is finite (100000 studs); only client-replicated targets are available.
--- Static review only: not tested in Roblox or any executor. No crash/ban guarantee.
--- Existing automatic features remain opt-in. Review settings before enabling.
+-- Remote Farm / manual-purchase compatibility update.
+-- Direct serialized blade requests; 35-stud local nape expansion retained.
+-- Background wave purchase workers yield to processed user UI clicks.
+-- No currency values are changed. No guarantee of infinite reach or server damage.
+-- Source assertions only: NOT compiled or runtime-tested in Roblox.
+-- Remote-only Auto Farm update, based on the supplied original source.
+-- Main/hub first-launch toggles OFF; versioned automatic session saving.
+-- Official Cascade latest endpoint retained. Runtime download still required.
+-- Local nape expansion >=35 studs. No infinite reach or flight-follow added.
+-- Static review only. Local hitbox size does not establish server hit acceptance.
 --[[
 	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
 ]]
@@ -49,6 +53,14 @@ local IN_MENU = (game.PlaceId == MENU_PLACE_ID)
 local SH = { DEV = false }
 function SH.say(...) print("[Smooth Hub]", ...) end
 function SH.dbg(...) if SH.DEV then print(...) end end
+SH.ManualPurchaseUntil=0
+SH.ManualInputConnection=game:GetService("UserInputService").InputBegan:Connect(function(input,processed)
+    if processed and (input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch) then
+        SH.ManualPurchaseUntil=os.clock()+2
+    end
+end)
+function SH.ManualPurchaseActive() return os.clock()<SH.ManualPurchaseUntil end
+
 -- 🛡️ กันบล็อกสร้างหน้าจอ/ฟีเจอร์ที่พัง ไม่ให้ลากทั้งสคริปต์ล้ม (เดิม error บล็อกเดียว = แท็บที่เหลือว่างเปล่า)
 -- บล็อกที่พังจะพิมพ์ error ลง Console (F9) พร้อมเลขบรรทัดเดิม ส่วนบล็อกอื่นยังทำงานต่อ
 function SH.Guard(name, fn)
@@ -62,6 +74,8 @@ _G.SmoothHubReplayToken = token
 local function Alive() return _G.SmoothHubReplayToken == token end
 local AppRef = nil
 _G.SmoothHubCleanup = function()
+    pcall(function() if SH.ManualInputConnection then SH.ManualInputConnection:Disconnect() end end)
+    pcall(function() if SH.FarmRestore then SH.FarmRestore() end end)
     pcall(function() if AppRef and AppRef.Destroy then AppRef:Destroy() end end)
 end
 local Cfg = {
@@ -142,10 +156,10 @@ local Cfg = {
     AutoFarm = false,
     AutoPlay = false,
     AutoClearWave = false,
-    ClearWaveRange = 100000,
+    ClearWaveRange = 300,
     AutoFarmThunder = false,
-    ThunderTargets = 100,   -- Thunder Spears: ไททันต่อการยิงหนึ่งชุด (0 หรือ 200 = ทุกตัว)
-    ThunderRange = 100000,   -- Thunder Spears: ยิงเฉพาะไททันที่อยู่ในระยะนี้จากตัวคุณ (สตัด)
+    ThunderTargets = 200,   -- Thunder Spears: ไททันต่อการยิงหนึ่งชุด (0 หรือ 200 = ทุกตัว)
+    ThunderRange = 10000,   -- Thunder Spears: ยิงเฉพาะไททันที่อยู่ในระยะนี้จากตัวคุณ (สตัด)
     AutoFarmSmart = false,
     FarmMode = "Smart",
     RefillEnabled = false,
@@ -156,8 +170,6 @@ local Cfg = {
     AutoRefillsBlade = false,
     AutoRefillsThunder = false,
     DamageMultiplier = false,
-    DamageScale = 1000,
-    BladeTargets = 100,
     SafeTime = 32,
     FailSafeAt = 20,
     AutoFailSafe = false,
@@ -268,9 +280,7 @@ local FARM_RANGES = {
     LeaveAtWave = { 1, 50 },
     ShopMaxPrice = { 0, 1000000 },
     ShopReserve = { 0, 1000000 },
-    ClearWaveRange = { 50, 100000 },
-    DamageScale = { 1, 1000 },
-    BladeTargets = { 1, 100 },
+    ClearWaveRange = { 50, 2000 },
     WaveMinGold = { 0, 10000000 },
     AutoSkillHoldTime = { 1, 10 },
     AutoSkillDelay = { 1, 30 },
@@ -278,8 +288,8 @@ local FARM_RANGES = {
     RetryAmount = { 1, 50 },
     SpinListSize = { 5, 100 },
     DefendErenRadius = { 50, 2000 },
-    ThunderTargets = { 1, 100 },
-    ThunderRange = { 50, 100000 },
+    ThunderTargets = { 0, 200 },
+    ThunderRange = { 50, 10000 },
     SkillLeftPriority = { 1, 3 },
     SkillMiddlePriority = { 1, 3 },
     SkillRightPriority = { 1, 3 },
@@ -433,6 +443,7 @@ end
 local saveHook = nil
 local saveQueued = false
 local function Save()
+    if SH.SlashFlush then SH.SlashFlush() end
     if saveQueued then return end
     saveQueued = true
     task.delay(0.4, function()
@@ -653,199 +664,62 @@ do
     ConfigStore.BuildDefault()
     ConfigStore.Reload()
 end
+
+SH.SlashSession={Cfg={},Hub={}}
+SH.SlashSaveStatus="File persistence unavailable"
+SH.SlashSessionPath="SmoothHub_SlashFix_"..LocalPlayer.UserId..".json"
+if type(readfile)=="function" and type(isfile)=="function" then
+    local ok,v=pcall(function() if isfile(SH.SlashSessionPath) then return HttpService:JSONDecode(readfile(SH.SlashSessionPath)) end end)
+    if ok and type(v)=="table" and type(v.Cfg)=="table" and type(v.Hub)=="table" then SH.SlashSession=v end
+end
+function SH.SlashFlush()
+    if type(writefile)~="function" then return false end
+    local ok,err=pcall(function() writefile(SH.SlashSessionPath,HttpService:JSONEncode(SH.SlashSession)) end)
+    SH.SlashSaveStatus=ok and "Settings saved" or ("Save error: "..tostring(err))
+    return ok
+end
+function SH.SlashTrack(t,key)
+    local saved=SH.SlashSession[key]
+    for k,v in pairs(t) do
+        if type(v)=="boolean" and (k:match("^Auto") or k=="NoClip" or k=="HitAllParts" or k=="DamageMultiplier" or k=="RefillEnabled") then t[k]=false end
+    end
+    for k,v in pairs(saved) do
+        if t[k]~=nil and type(t[k])==type(v) and type(v)~="table" then
+            if type(v)~="number" or (v==v and math.abs(v)~=math.huge) then
+                local range=key=="Cfg" and FARM_RANGES[k]
+                t[k]=range and math.clamp(v,range[1],range[2]) or v
+            end
+        end
+    end
+    if key=="Cfg" and SH.SlashSession.ManualPurchaseMigration~=1 then
+        for _,k in ipairs({"AutoShop","AutoHealInjuries","AutoUpgradeChar","AutoUpgradeBlades","AutoRollBlessing"}) do t[k]=false end
+        SH.SlashSession.ManualPurchaseMigration=1
+    end
+    SH.SlashSession[key]=t
+    task.spawn(function()
+        local last=""
+        while Alive() do
+            local ok,json=pcall(function() return HttpService:JSONEncode(SH.SlashSession) end)
+            if ok and json~=last and SH.SlashFlush() then last=json end
+            task.wait(.25)
+        end
+    end)
+end
+
 SH.say("Loading interface...")
--- Embedded, keyless UI compatibility layer. No HTTP or downloaded code.
-local Cascade = (function()
-    local UIS = game:GetService("UserInputService")
-    local C = { Accents = {}, Themes = { Dark = {} }, Symbols = {}, Components = {} }
-    for _, n in ipairs({"Red","Dark","Pink","Blue","Purple","Green","Graphite","Blood","Crimson","Orange","Yellow"}) do
-        C.Accents[n] = { Dark = {}, Light = {} }
-    end
-    local connections, gui, tabs, first = {}, nil, {}, true
-    local function connect(signal, fn)
-        local c = signal:Connect(fn); connections[#connections+1] = c; return c
-    end
-    local function make(class, parent, props)
-        local x = Instance.new(class)
-        for k,v in pairs(props or {}) do x[k] = v end
-        x.Parent = parent; return x
-    end
-    local function text(class, parent, value, height)
-        return make(class,parent,{Text=tostring(value or ""),Font=Enum.Font.Gotham,TextSize=13,
-            TextColor3=Color3.fromRGB(240,240,245),BackgroundColor3=Color3.fromRGB(43,27,33),
-            BorderSizePixel=0,Size=UDim2.new(1,0,0,height or 30),TextWrapped=true})
-    end
-    local function stack(parent)
-        make("UIListLayout",parent,{Padding=UDim.new(0,6),SortOrder=Enum.SortOrder.LayoutOrder})
-    end
-    local function proxy(data, update)
-        return setmetatable({}, {__index=data,__newindex=function(_,k,v)
-            data[k]=v; if update then update(k,v) end
-        end})
-    end
-    local function invoke(o, key, value)
-        local fn=o[key]; if type(fn)=="function" then
-            local ok,e=pcall(fn,o,value); if not ok then warn("[Smooth UI] "..tostring(e)) end
-        end
-    end
-    local node
-    node=function(parent, kind)
-        local n={__instance=parent}
-        function n:PageSection(o)
-            local f=make("Frame",parent,{BackgroundTransparency=1,Size=UDim2.new(1,-4,0,0),AutomaticSize=Enum.AutomaticSize.Y})
-            stack(f); text("TextLabel",f,o.Title,30)
-            if o.Subtitle then text("TextLabel",f,o.Subtitle,38) end
-            return node(f,"section")
-        end
-        function n:Form() return node(parent,"form") end
-        function n:Row()
-            local f=make("Frame",parent,{BackgroundTransparency=1,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y})
-            stack(f); return node(f,"row")
-        end
-        function n:Left() return node(parent,"left") end
-        function n:Right() return node(parent,"right") end
-        function n:TitleStack(o)
-            local l=text("TextLabel",parent,o.Title,28)
-            local sub=text("TextLabel",parent,o.Subtitle or "",34); sub.TextSize=11
-            return proxy({Title=o.Title,Subtitle=o.Subtitle,__instance=l},function(k,v)
-                if k=="Title" then l.Text=tostring(v) elseif k=="Subtitle" then sub.Text=tostring(v or "") end
-            end)
-        end
-        function n:Label(o)
-            local l=text("TextLabel",parent,o.Text,30)
-            return proxy({Text=o.Text,__instance=l},function(k,v) if k=="Text" then l.Text=tostring(v) end end)
-        end
-        function n:Button(o)
-            local b=text("TextButton",parent,o.Label or o.Text or "Button",32)
-            local obj=proxy({Label=o.Label,Callback=o.Callback,__instance=b},function(k,v)
-                if k=="Label" or k=="Text" then b.Text=tostring(v) end
-            end)
-            connect(b.Activated,function() invoke(obj,"Callback") end); return obj
-        end
-        function n:Toggle(o)
-            local b=text("TextButton",parent,"",32); local obj
-            local function refresh() b.Text=obj.Value and "ON" or "OFF"; b.BackgroundColor3=obj.Value and Color3.fromRGB(145,25,48) or Color3.fromRGB(43,27,33) end
-            obj=proxy({Value=o.Value==true,ValueChanged=o.ValueChanged,__instance=b},function(k) if k=="Value" then refresh() end end)
-            connect(b.Activated,function() obj.Value=not obj.Value; invoke(obj,"ValueChanged",obj.Value) end)
-            refresh(); return obj
-        end
-        function n:Slider(o)
-            local lo,hi=tonumber(o.Minimum) or 0,tonumber(o.Maximum) or 100
-            if hi<=lo then hi=lo+1 end
-            local box=text("TextBox",parent,"",30); box.ClearTextOnFocus=false
-            local bar=make("TextButton",parent,{Text="",Size=UDim2.new(1,0,0,18),BackgroundColor3=Color3.fromRGB(60,40,45),BorderSizePixel=0})
-            local fill=make("Frame",bar,{Size=UDim2.new(0,0,1,0),BackgroundColor3=Color3.fromRGB(230,35,65),BorderSizePixel=0})
-            local obj
-            local function refresh()
-                local v=tonumber(obj.Value) or lo
-                if v~=v or v==math.huge or v==-math.huge then v=lo end
-                v=math.clamp(v,lo,hi); box.Text=tostring(v); fill.Size=UDim2.new((v-lo)/(hi-lo),0,1,0)
-            end
-            obj=proxy({Value=o.Value or lo,ValueChanged=o.ValueChanged,__instance=box},function(k) if k=="Value" then refresh() end end)
-            local function set(v)
-                v=tonumber(v); if not v or v~=v or math.abs(v)==math.huge then refresh(); return end
-                obj.Value=math.clamp(v,lo,hi); invoke(obj,"ValueChanged",obj.Value); refresh()
-            end
-            connect(box.FocusLost,function() set(box.Text) end)
-            local dragging=false
-            local function move(x) set(math.floor(lo+math.clamp((x-bar.AbsolutePosition.X)/math.max(1,bar.AbsoluteSize.X),0,1)*(hi-lo)+0.5)) end
-            connect(bar.InputBegan,function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=true; move(i.Position.X) end end)
-            connect(UIS.InputChanged,function(i) if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then move(i.Position.X) end end)
-            connect(UIS.InputEnded,function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
-            refresh(); return obj
-        end
-        local function dropdown(o,multi)
-            local b=text("TextButton",parent,o.Label or "Choose",32)
-            local list=make("Frame",parent,{Visible=false,BackgroundTransparency=1,Size=UDim2.new(1,0,0,0),AutomaticSize=Enum.AutomaticSize.Y}); stack(list)
-            local obj, optionButtons
-            local function refresh()
-                if multi then
-                    local names={}; for _,i in ipairs(type(obj.Value)=="table" and obj.Value or {}) do names[#names+1]=tostring((obj.Options or {})[i] or i) end
-                    b.Text=#names>0 and table.concat(names,", ") or "Choose"
-                else b.Text=tostring(obj.Label or (obj.Options or {})[obj.Value] or "Choose") end
-            end
-            local function rebuild()
-                for _,x in ipairs(optionButtons or {}) do x:Destroy() end; optionButtons={}
-                for i,name in ipairs(obj.Options or {}) do
-                    local item=text("TextButton",list,name,30); optionButtons[#optionButtons+1]=item
-                    connect(item.Activated,function()
-                        if multi then
-                            local v={}; for _,j in ipairs(type(obj.Value)=="table" and obj.Value or {}) do v[#v+1]=j end
-                            local at=table.find(v,i); if at then table.remove(v,at) else v[#v+1]=i end
-                            obj.Value=v
-                        else obj.Value=i; obj.Label=tostring(name); list.Visible=false end
-                        invoke(obj,"ValueChanged",obj.Value); refresh()
-                    end)
-                end
-            end
-            obj=proxy({Options=o.Options or {},Value=o.Value,Label=o.Label,ValueChanged=o.ValueChanged,__instance=b},function(k)
-                if k=="Options" then rebuild() end; refresh()
-            end)
-            connect(b.Activated,function() list.Visible=not list.Visible end); rebuild(); refresh(); return obj
-        end
-        function n:PullDownButton(o) return dropdown(o,false) end
-        function n:PopUpButton(o) return dropdown(o,true) end
-        function n:TextField(o)
-            local b=text("TextBox",parent,o.Value or o.Text or "",34); b.ClearTextOnFocus=false; b.PlaceholderText=o.Placeholder or ""
-            local obj=proxy({Value=o.Value or "",ValueChanged=o.ValueChanged,__instance=b},function(k,v) if k=="Value" then b.Text=tostring(v or "") end end)
-            connect(b.FocusLost,function() obj.Value=b.Text; invoke(obj,"ValueChanged",obj.Value) end); return obj
-        end
-        function n:KeybindField(o)
-            local b=text("TextButton",parent,tostring(o.Value or "B"),30)
-            local obj=proxy({Value=o.Value,ValueChanged=o.ValueChanged,__instance=b},function(k,v) if k=="Value" then b.Text=tostring(v) end end)
-            local waiting=false
-            connect(b.Activated,function() waiting=true; b.Text="Press a key" end)
-            connect(UIS.InputBegan,function(i) if waiting and i.KeyCode~=Enum.KeyCode.Unknown then waiting=false; obj.Value=i.KeyCode; invoke(obj,"ValueChanged",obj.Value) end end)
-            return obj
-        end
-        function n:Tab(o)
-            local b=text("TextButton",parent,o.Title,32)
-            local page=make("ScrollingFrame",n._content,{Visible=false,BackgroundTransparency=1,BorderSizePixel=0,
-                Size=UDim2.fromScale(1,1),CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ScrollBarThickness=6})
-            stack(page)
-            local obj
-            obj=proxy({Selected=false,__instance=page},function(k,v)
-                if k=="Selected" then page.Visible=v==true end
-            end)
-            local base=node(page,"page"); for k,v in pairs(base) do if k~="__instance" then obj[k]=v end end
-            tabs[#tabs+1]=obj
-            connect(b.Activated,function() for _,t in ipairs(tabs) do t.Selected=t==obj end end)
-            if first then first=false; obj.Selected=true end
-            return obj
-        end
-        return n
-    end
-    function C.New()
-        gui=make("ScreenGui",PlayerGui,{Name="SmoothHubEmbeddedUI",ResetOnSpawn=false,DisplayOrder=1000,IgnoreGuiInset=false})
-        local app={}
-        function app:Destroy() for _,c in ipairs(connections) do c:Disconnect() end; table.clear(connections); if gui then gui:Destroy() end end
-        function app:SetTheme() end
-        function app:Window(o)
-            local f=make("Frame",gui,{AnchorPoint=Vector2.new(.5,.5),Position=UDim2.fromScale(.5,.5),Size=o.Size or UDim2.fromOffset(850,530),BackgroundColor3=Color3.fromRGB(18,12,17),BorderSizePixel=0})
-            make("UISizeConstraint",f,{MinSize=Vector2.new(300,240),MaxSize=Vector2.new(1000,800)})
-            local title=text("TextLabel",f,o.Title.." | Embedded UI",38)
-            local minimize=text("TextButton",f,"Hide",28); minimize.Size=UDim2.fromOffset(52,28); minimize.Position=UDim2.new(1,-58,0,5)
-            local restore=text("TextButton",gui,"Smooth Hub",32); restore.Size=UDim2.fromOffset(120,32); restore.Position=UDim2.fromOffset(8,8); restore.Visible=false
-            local nav=make("ScrollingFrame",f,{Position=UDim2.new(0,6,0,44),Size=UDim2.new(.28,-10,1,-50),BackgroundTransparency=1,BorderSizePixel=0,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ScrollBarThickness=4}); stack(nav)
-            local content=make("Frame",f,{Position=UDim2.new(.28,4,0,44),Size=UDim2.new(.72,-12,1,-50),BackgroundTransparency=1})
-            local w=proxy({__instance=f,_nav=nav,_content=content,Minimized=false,Dropshadow=false},function(k,v)
-                if k=="Minimized" then f.Visible=not v; restore.Visible=v==true end
-            end)
-            connect(minimize.Activated,function() w.Minimized=true end); connect(restore.Activated,function() w.Minimized=false end)
-            local dragging,start,origin
-            connect(title.InputBegan,function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=true; start=i.Position; origin=f.Position end end)
-            connect(UIS.InputChanged,function(i) if dragging and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then local d=i.Position-start; f.Position=UDim2.new(origin.X.Scale,origin.X.Offset+d.X,origin.Y.Scale,origin.Y.Offset+d.Y) end end)
-            connect(UIS.InputEnded,function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then dragging=false end end)
-            return w
-        end
-        return app
-    end
-    function C.Components.Section(w,o)
-        text("TextLabel",w._nav,o.Title,26)
-        local n=node(w._nav,"category"); n._content=w._content; return n
-    end
-    return C
-end)()
+local okLib, Cascade = pcall(function()
+    return loadstring(game:HttpGet("https://github.com/cascadeui/Cascade/releases/latest/download/dist.luau"))()
+end)
+if not okLib or type(Cascade) ~= "table" then
+    SH.say("Could not load the interface. Check your internet connection.")
+    SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Smooth Hub", Text = "โหลด UI ไม่สำเร็จ (เช็คเน็ต/ลิงก์ GitHub)", Duration = 8,
+        })
+    end)
+    return
+end
 SH.say("Interface ready.")
 do
     local mainRed = Color3.fromHex("#FF1E3C")
@@ -1388,6 +1262,7 @@ do
         end
     end
 end
+SH.SlashTrack(Cfg,"Cfg")
 Cfg.JoinDelay = ClampDelay(Cfg.JoinDelay)
 Cfg.MissionJoinDelay = ClampDelay(Cfg.MissionJoinDelay)
 Cfg.RaidJoinDelay = ClampDelay(Cfg.RaidJoinDelay)
@@ -3541,17 +3416,18 @@ do
             end
         end)
     end
-    AddFarmToggle(MainForm, "Damage Repeat (up to 1000)", "Requested hit repetitions, not a guaranteed server-side damage multiplier.", "DamageMultiplier", "OnDamageMultiplier")
-    AddFarmSlider(MainForm, function(v) return "Requested hit repetitions ( " .. v .. " )" end,
-        "1-1000 requested repeats. Rate and queue limits take priority; the server decides damage.", "DamageScale", nil)
-    AddFarmSlider(MainForm, function(v) return "Blade targets per slash ( " .. v .. " )" end,
-        "1-100 currently replicated titan targets; not guaranteed kills.", "BladeTargets", nil)
-    AddFarmSlider(MainForm, function(v) return "Stationary attack range ( " .. v .. " studs )" end,
-        "Use existing Auto Clear Wave and Auto Play. Unloaded titans cannot be targeted.", "ClearWaveRange", nil)
-    AddFarmSlider(MainForm, function(v) return "Thunder range ( " .. v .. " studs )" end,
-        "Finite map-scale range; server validation still applies.", "ThunderRange", nil)
-    AddFarmSlider(MainForm, function(v) return "Thunder targets ( " .. v .. " )" end,
-        "1-100 targets per shot.", "ThunderTargets", nil)
+    AddFarmToggle(MainForm, "Damage Multiplier ( x10 )", "Deal 10x damage to Titans.", "DamageMultiplier", "OnDamageMultiplier")
+    do
+        local row=MainForm:Row()
+        row:Left():TitleStack({Title="Auto Farm remote status",Subtitle="Remote-only; napes expanded locally to at least 35 studs. Damage is not confirmed."})
+        local label=row:Right():Label({Text="Off"})
+        task.spawn(function()
+            while Alive() do
+                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..SH.SlashSaveStatus end)
+                task.wait(.5)
+            end
+        end)
+    end
 
     AddFarmSlider(MainForm, function(v) return "Set Start Farm ( " .. v .. "s )" end,
         "Wait after spawning before farming. 0 = start right away.", "StartDelay", "OnStartDelay")
@@ -3621,17 +3497,17 @@ do
     local ORBIT_SPEED = 1.6
     local ORBIT_BOB = 5
     local HIT_COUNT = 10 -- จำนวนไททันที่ฟันหลังคอพร้อมกันต่อรอบ (ตัวหลัก + ตัวใกล้สุดอีก HIT_COUNT-1) | เดิม 9
-    local DAMAGE_MULT = 1000
-    local BOSS_MULT = 1000 -- ตัวคูณดาเมจใส่ Colossal Titan (ตอนมีบอส) | ไททันตัวเล็กยังใช้ BOSS_SMALL_MULT (x10) | ปรับเลขนี้ได้
-    local OTHER_MULT = 1000
+    local DAMAGE_MULT = 10
+    local BOSS_MULT = 10 -- ตัวคูณดาเมจใส่ Colossal Titan (ตอนมีบอส) | ไททันตัวเล็กยังใช้ BOSS_SMALL_MULT (x10) | ปรับเลขนี้ได้
+    local OTHER_MULT = 10
     local RAID_SMALL = HIT_COUNT - 1 -- ตอนมี Colossal: ฟันไททันตัวเล็กได้เต็มโควตาเหมือนตอนไม่มีบอส (เดิม 3 ตัว)
     local BOSS_ALWAYS = true
     local PRIORITY = {}
     local BOSS_NORMAL_HP = 0
     local BOSS_SMALL_MULT = DAMAGE_MULT -- ตอนมี Colossal ไททันตัวเล็กก็โดน x10 เหมือนบอส (เดิม x1)
     local MultState = { full = DAMAGE_MULT, other = OTHER_MULT }
-    local function Mult() return Cfg.DamageMultiplier and math.min(Cfg.DamageScale or 1000, MultState.full) or 1 end
-    local function OtherMult() return Cfg.DamageMultiplier and math.min(Cfg.DamageScale or 1000, MultState.other, MultState.full) or 1 end
+    local function Mult() return Cfg.DamageMultiplier and MultState.full or 1 end
+    local function OtherMult() return Cfg.DamageMultiplier and math.min(MultState.other, MultState.full) or 1 end
     local B = { Target = nil, Hits = 0, Status = "Idle" }
     Farm.Blades = B
     local post = nil
@@ -3866,6 +3742,7 @@ do
         return best
     end
     local function Running()
+        if Cfg.AutoFarm or Cfg.AutoFarmThunder then return false end -- handled by input-driven worker
         if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) or not Farm.CanUseHere() then return false end
         if Farm.Refilling then return false end
         if Farm.FailSafeActive then return false end
@@ -3877,34 +3754,36 @@ do
     local REMOTE_BUDGET = 150
     local budgetStart, budgetUsed = os.clock(), 0
     local function Reps(nParts)
-        local now = os.clock()
-        if now - budgetStart >= 1 then budgetStart, budgetUsed = now, 0 end
-        local n = math.max(nParts, 1)
-        local available = math.max(0, REMOTE_BUDGET - budgetUsed)
-        local reps = math.min(Mult(), math.floor(available / n))
-        budgetUsed = budgetUsed + reps * n
+        local now=os.clock()
+        if now-budgetStart>=1 then budgetStart,budgetUsed=now,0 end
+        local n=math.max(nParts,1)
+        local reps=math.max(0,math.min(Mult(),math.floor((REMOTE_BUDGET-budgetUsed)/n)))
+        budgetUsed=budgetUsed+reps*n
         return reps
     end
 
     -- 📦 ตัวส่ง remote เป็นชุด: เข้าคิวก่อน แล้วปล่อยทีละ NET_BATCH คำสั่งต่อเฟรม (เรียงลำดับเดิมทุกคำสั่ง)
     -- แทนที่จะยิงร้อยกว่าคำสั่งในเฟรมเดียว | คิวยาวเกิน NET_QUEUE_MAX = ข้ามรอบโจมตีนั้น กันคิวค้างสะสม
-    local NET_BATCH = 6
+    local NET_BATCH = 4
     local NET_QUEUE_MAX = 400
     local netQ, netHead, netTail = {}, 1, 0
     local function NetPending() return netTail - netHead + 1 end
     local function NetPush(remote, ...)
-        if NetPending() >= NET_QUEUE_MAX then return false end
+        if NetPending()>=NET_QUEUE_MAX then return false end
         netTail = netTail + 1
         netQ[netTail] = { remote = remote, args = table.pack(...) }
     end
     local netConn
+    local sendWindow,sendCount=os.clock(),0
     netConn = RunService.Heartbeat:Connect(function()
         if not Alive() then
             if netConn then netConn:Disconnect() end
             return
         end
+        if os.clock()-sendWindow>=1 then sendWindow,sendCount=os.clock(),0 end
         local sent = 0
-        while netHead <= netTail and sent < NET_BATCH do
+        while netHead <= netTail and sent < NET_BATCH and sendCount<60 do
+            sendCount=sendCount+1
             local it = netQ[netHead]
             netQ[netHead] = nil
             netHead = netHead + 1
@@ -3915,34 +3794,49 @@ do
         end
         if netHead > netTail then netHead, netTail = 1, 0 end
     end)
+    local slashBusy=false
     local function Slash(parts)
-        local remote = Post()
-        if not remote then return false end
-        if typeof(parts) == "Instance" then parts = { parts } end
-        if NetPending() > NET_QUEUE_MAX then return false end
-        local reps = Reps(#parts)
-        if reps < 1 or NetPending() + reps * #parts + 2 > NET_QUEUE_MAX then return false end
-        NetPush(remote, "Attacks", "Slash", true)
-        for r = 1, reps do
-            for i, part in ipairs(parts) do
-                if PRIORITY[part] or r <= OtherMult() then
-                    NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
+        if slashBusy then return false end
+        local remote=Post()
+        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="POST RemoteEvent unavailable"; return false end
+        if typeof(parts)=="Instance" then parts={parts} end
+        if type(parts)~="table" or #parts==0 then return false end
+        slashBusy=true
+        local started=false
+        local hits=0
+        local ok,err=xpcall(function()
+            remote:FireServer("Attacks","Slash",true)
+            started=true
+            task.wait(.08)
+            if not Alive() then return end
+            for i,part in ipairs(parts) do
+                if i>12 then break end
+                if part and part.Parent and part:IsA("BasePart") then
+                    remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
+                    hits=hits+1
                 end
             end
-        end
-        NetPush(remote, "Attacks", "Slash", false)
-        B.Hits = B.Hits + #parts
-        return true
+            task.wait(.06)
+        end,function(e) return tostring(e) end)
+        local ended,endErr=true,nil
+        if started then ended,endErr=pcall(function() remote:FireServer("Attacks","Slash",false) end) end
+        slashBusy=false
+        if not ok or not ended then Farm.LastAttackIssue=tostring(err or endErr); return false end
+        Farm.LastAttackIssue=nil
+        B.Hits=B.Hits+hits -- request count, not kills
+        return hits>0
     end
+
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
-        return math.clamp(math.floor(tonumber(n) or 100), 1, 100)
+        if n <= 0 or n >= 200 then return math.huge end
+        return n
     end
     local function NapesAround(main, spear)
         local mainNape = NapeOf(main)
         if not mainNape then return {} end
-        local cap = spear and SpearLimit() or math.clamp(Cfg.BladeTargets or HIT_COUNT, 1, 100)
+        local cap = spear and SpearLimit() or HIT_COUNT
         local rangeFrom, rangeMax = nil, Cfg.ThunderRange or 10000
         if spear then
             local rr = MyRoot()
@@ -3978,7 +3872,7 @@ do
             else
                 MultState.full, MultState.other = BOSS_MULT, BOSS_SMALL_MULT
             end
-            local smallLeft = spear and (cap - 1) or math.max(0, cap - 1)
+            local smallLeft = spear and (cap - 1) or math.min(RAID_SMALL, HIT_COUNT - 1)
             if main ~= boss and smallLeft > 0 then
                 list[#list + 1] = mainNape
                 smallLeft = smallLeft - 1
@@ -4412,9 +4306,31 @@ do
         return #out > 0 and out or nil
     end
     local function SlashBurst(parts)
-        return Slash(parts)
+        local remote = Post()
+        if not remote or NetPending() > NET_QUEUE_MAX then return false end
+        NetPush(remote, "Attacks", "Slash", true)
+        local total = 0
+        for _, part in ipairs(parts) do
+            local size = BURST_SIZE
+            if PRIORITY[part] and MultState.full > DAMAGE_MULT then
+                size = math.floor(BURST_SIZE * MultState.full / DAMAGE_MULT) -- Colossal: x30 = 3 เท่าของชุดปกติ
+            end
+            for _ = 1, size do
+                NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
+            end
+            total = total + size
+        end
+        NetPush(remote, "Attacks", "Slash", false)
+        B.Hits = B.Hits + total
+        return true
     end
-
+    local StatsSvc = game:GetService("Stats")
+    local PING_BACKOFF = true   -- ตั้งเป็น false ถ้าไม่อยากให้ลดความถี่ตามปิง
+    local PING_LIMIT = 350      -- ms: ปิงเกินนี้จะหน่วงช่วงโจมตีให้ห่างขึ้น
+    local function PingMs()
+        local ok, v = pcall(function() return StatsSvc.Network.ServerStatsItem["Data Ping"]:GetValue() end)
+        return (ok and tonumber(v)) or 0
+    end
     task.spawn(function()
         local partLast = setmetatable({}, { __mode = "k" })
         while Alive() do
@@ -4494,6 +4410,91 @@ do
     end)
     -- ⚔️ Auto Clear Wave: ใช้ระบบโจมตีเดียวกับ Auto Farm [ Blades ] แต่ "ยืนอยู่กับที่" ไม่บินไปหาไททัน
     -- โจมตีไททันที่อยู่ในระยะ (Cfg.ClearWaveRange) จากตำแหน่งปัจจุบัน | เปิดตัวนี้ = Auto Farm [ Blades ] / [ TS ] ถูกปิดให้อัตโนมัติ
+
+
+    -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
+    Farm.InputStatus="Off"
+    local expanded=setmetatable({}, {__mode="k"})
+    local function restoreNapes()
+        for part,old in pairs(expanded) do
+            if part.Parent then
+                pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end)
+            end
+            expanded[part]=nil
+        end
+    end
+    SH.FarmRestore=restoreNapes
+    local function enlarge(part)
+        if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
+        local original=expanded[part].Size
+        part.Size=Vector3.new(math.max(35,original.X),math.max(35,original.Y),math.max(35,original.Z))
+        part.CanCollide=false
+    end
+    local function collect()
+        local folder=workspace:FindFirstChild("Titans")
+        local list,seen={},{}
+        for _,t in ipairs(folder and folder:GetDescendants() or {}) do
+            if t:IsA("Model") and TitanAlive(t) then
+                local n=NapeOf(t)
+                if n and not seen[n] then
+                    seen[n]=true
+                    local ok,err=pcall(enlarge,n)
+                    if not ok then Farm.LastNapeError=tostring(err) end
+                    list[#list+1]={model=t,part=n}
+                end
+            end
+        end
+        return list
+    end
+    task.spawn(function()
+        local cursor=1
+        local targets={}
+        local scanAt=0
+        local lastCharacter=nil
+        while Alive() do
+            task.wait(.1)
+            local ok,err=pcall(function()
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then
+                    restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
+                end
+                if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
+                if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
+                if Farm.NpcBusy or SH.ManualPurchaseActive() then Farm.InputStatus="Paused for manual UI / NPC purchase"; return end
+                if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
+                    Farm.InputStatus="Paused by refill/fail-safe"; return
+                end
+                if lastCharacter~=LocalPlayer.Character then lastCharacter=LocalPlayer.Character; scanAt=0; cursor=1 end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.25 end
+                if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
+                if NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded network queue"; return end
+                local batch={}
+                local inspected=0
+                while inspected<#targets and #batch<12 do
+                    if cursor>#targets then cursor=1 end
+                    local item=targets[cursor]; cursor=cursor+1; inspected=inspected+1
+                    if item.part.Parent and TitanAlive(item.model) then
+                        batch[#batch+1]=item.part; B.Target=item.model
+                    end
+                end
+                if #batch==0 then scanAt=0; Farm.InputStatus="Refreshing targets"; return end
+                local sent
+                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                if thunder then
+                    sent=Spear(batch)
+                else
+                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
+                    sent=Slash(batch)
+                end
+                Farm.InputStatus=(thunder and "Thunder" or "Blade")..": "..
+                    (sent and "attack sequence sent (damage unconfirmed)" or "request not sent; check ammo/remote/queue")..
+                    " | "..#targets.." napes detected | client size >=35"
+                B.Status=Farm.InputStatus
+            end)
+            if not ok then Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus; warn(Farm.InputStatus); task.wait(1) end
+        end
+        restoreNapes()
+    end)
+
     Farm.ClearWaveStatus = "Off"
     function Farm.OnAutoClearWave(on)
         if on and SH.PlayOn() then
@@ -4507,7 +4508,7 @@ do
         local partLast = setmetatable({}, { __mode = "k" })
         while Alive() do
             task.wait(ATTACK_GAP[Cfg.AttackSpeed or 0] or 0.4)
-            if not (Cfg.AutoClearWave and SH.PlayOn()) then
+            if Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart or not (Cfg.AutoClearWave and SH.PlayOn()) then
                 Farm.ClearWaveStatus = (Cfg.AutoClearWave and "Waiting for Auto Play") or "Off"
             elseif not Farm.CanUseHere() then
                 Farm.ClearWaveStatus = "Waiting for wave mode"
@@ -10596,13 +10597,13 @@ do
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
 
         local function ClickObj(obj, attempt)
+            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
-                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11091,6 +11092,7 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunShop()
+            if SH.ManualPurchaseActive() then return false end
             if shopping then return false end
             Farm.NpcAcquire("Shop") -- ต่อคิวตามลำดับความสำคัญ
             shopping = true
@@ -11254,13 +11256,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
+            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
-                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11446,6 +11448,7 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunHeal()
+            if SH.ManualPurchaseActive() then return false end
             if healing then return false end
             Farm.NpcAcquire("Heal") -- ต่อคิวตามลำดับความสำคัญ
             healing = true
@@ -11661,13 +11664,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
+            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
-                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11871,7 +11874,7 @@ do
                     tries = 0
                 else
                     tries += 1
-                    if tries >= 3 then return bought, "gold" end
+                    if tries >= 3 then return bought, "unconfirmed" end
                 end
             end
             return bought, "limit"
@@ -11884,6 +11887,7 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunUpgrade()
+            if SH.ManualPurchaseActive() then return false end
             if upgrading then return false end
             Farm.NpcAcquire("Character") -- ต่อคิวตามลำดับความสำคัญ
             upgrading = true
@@ -11909,7 +11913,7 @@ do
                 end
                 if #noGold > 0 then
                     Farm.GoldFail("Character")
-                    SetStatus(("Bought %d. Not enough gold for: %s"):format(total, table.concat(noGold, ", ")))
+                    SetStatus(("Bought %d. Purchase not confirmed for: %s"):format(total, table.concat(noGold, ", ")))
                 else
                     SetStatus(("Done: bought %d upgrade(s)"):format(total))
                 end
@@ -12050,13 +12054,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
+            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
-                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -12222,6 +12226,7 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunUpgrade()
+            if SH.ManualPurchaseActive() then return false end
             if working then return false end
             Farm.NpcAcquire("Blades") -- ต่อคิวตามลำดับความสำคัญ
             working = true
@@ -12391,13 +12396,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
+            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
-                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -12735,6 +12740,7 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunRoll()
+            if SH.ManualPurchaseActive() then return false end
             if rolling then return false end
             Farm.NpcAcquire("Blessing") -- ต่อคิวตามลำดับความสำคัญ (ท้ายสุด ใช้ทองที่เหลือ)
             rolling = true
@@ -13551,6 +13557,7 @@ ConfigStore.BuildDefault(UiSync.Defaults.Hub)
 SettingsStore.Restore(HubConfig, SavedData.Hub)
 ConfigStore.ApplyHub(HubConfig, ConfigStore.AutoloadSnapshot())
 if SH.LegacyHub then ConfigStore.ApplyHub(HubConfig, { Hub = SH.LegacyHub }) end
+SH.SlashTrack(HubConfig,"Hub")
 SH.say("Settings loaded.")
 local AUTOEXEC_URL = "https://githubusercontent.smoothhubv1.workers.dev/raw/9949e6715b89f8c1d7b1/Attack-on-Titan-Revolution.lua"
 UiSync.ReloadUrl = AUTOEXEC_URL
