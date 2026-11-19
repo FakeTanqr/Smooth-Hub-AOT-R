@@ -1,13 +1,8 @@
--- AUTO FARM UPDATE: stationary, all replicated targets, no client distance filter.
--- Bounded round-robin batches; not a guarantee of kills, raid compatibility, or server acceptance.
--- Original official-Cascade loader and prior autosave implementation retained.
--- Official Cascade loader update. Original application UI construction retained.
--- Official upstream release endpoint per Cascade import documentation.
--- Release download blocked in this editing environment; runtime compatibility unverified.
--- First launch: main and hub toggles OFF. Later launches restore this version's session.
--- Original UI library is still required once; cached locally after successful load.
--- No claim of guaranteed kills, server acceptance, or universal executor compatibility.
-pcall(function() if type(_G.SmoothHubRepairFlush)=="function" then _G.SmoothHubRepairFlush() end end)
+-- Remote-only Auto Farm update, based on the supplied original source.
+-- Main/hub first-launch toggles OFF; versioned automatic session saving.
+-- Official Cascade latest endpoint retained. Runtime download still required.
+-- Local nape expansion >=35 studs. No infinite reach or flight-follow added.
+-- Static review only. Local hitbox size does not establish server hit acceptance.
 --[[
 	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
 ]]
@@ -169,7 +164,7 @@ local Cfg = {
     FlySpeed = 600,
     StartDelay = 4,
     PartCooldown = 7,
-    FlyHeight = 6,
+    FlyHeight = 230,
     WaitForBoss = false,
     BossSettle = 5,
     AttackSpeed = 0,
@@ -265,7 +260,7 @@ local FARM_RANGES = {
     FlySpeed = { 600, 2000 },
     StartDelay = { 0, 60 },
     PartCooldown = { 4, 10 },
-    FlyHeight = { 0, 500 },
+    FlyHeight = { 150, 500 },
     BossSettle = { 0, 30 },
     LeaveAtWave = { 1, 50 },
     ShopMaxPrice = { 0, 1000000 },
@@ -433,7 +428,7 @@ end
 local saveHook = nil
 local saveQueued = false
 local function Save()
-    if SH.FlushSession then SH.FlushSession() end
+    if SH.SlashFlush then SH.SlashFlush() end
     if saveQueued then return end
     saveQueued = true
     task.delay(0.4, function()
@@ -655,98 +650,53 @@ do
     ConfigStore.Reload()
 end
 
--- Repair session store: first launch OFF; later launches restore the last session.
-SH.RepairDefaults = table.clone(Cfg)
-SH.Session = { Schema = 1, Cfg = {}, Hub = {} }
-SH.SaveStatus = "Not saved yet"
-SH.SessionPath = "SmoothHub_RepairSession_" .. tostring(LocalPlayer.UserId) .. ".json"
-SH.SessionCanWrite = type(writefile)=="function" and type(readfile)=="function" and type(isfile)=="function"
-if SH.SessionCanWrite then
-    local ok, value = pcall(function()
-        if not isfile(SH.SessionPath) then return nil end
-        return HttpService:JSONDecode(readfile(SH.SessionPath))
-    end)
-    if ok and type(value)=="table" and value.Schema==1 and type(value.Cfg)=="table" and type(value.Hub)=="table" then
-        SH.Session=value
-    elseif not ok then
-        warn("[Smooth Hub] Session read failed: "..tostring(value))
-    end
+SH.SlashSession={Cfg={},Hub={}}
+SH.SlashSaveStatus="File persistence unavailable"
+SH.SlashSessionPath="SmoothHub_SlashFix_"..LocalPlayer.UserId..".json"
+if type(readfile)=="function" and type(isfile)=="function" then
+    local ok,v=pcall(function() if isfile(SH.SlashSessionPath) then return HttpService:JSONDecode(readfile(SH.SlashSessionPath)) end end)
+    if ok and type(v)=="table" and type(v.Cfg)=="table" and type(v.Hub)=="table" then SH.SlashSession=v end
 end
-function SH.FlushSession()
-    if not SH.SessionCanWrite then SH.SaveStatus="File access unavailable: session cannot persist"; return false end
-    local ok,err=pcall(function() writefile(SH.SessionPath,HttpService:JSONEncode(SH.Session)) end)
-    SH.SaveStatus=ok and "Saved automatically" or ("Save failed: "..tostring(err))
-    if not ok then warn("[Smooth Hub] "..SH.SaveStatus) end
+function SH.SlashFlush()
+    if type(writefile)~="function" then return false end
+    local ok,err=pcall(function() writefile(SH.SlashSessionPath,HttpService:JSONEncode(SH.SlashSession)) end)
+    SH.SlashSaveStatus=ok and "Settings saved" or ("Save error: "..tostring(err))
     return ok
 end
-function SH.TrackSession(source, key)
-    local saved=SH.Session[key]
-    for k,v in pairs(source) do
-        if key=="Cfg" and SH.RepairDefaults[k]~=nil then source[k]=SH.RepairDefaults[k] end
-        if type(v)=="boolean" then source[k]=false end
-    end
+function SH.SlashTrack(t,key)
+    local saved=SH.SlashSession[key]
+    for k,v in pairs(t) do if type(v)=="boolean" then t[k]=false end end
     for k,v in pairs(saved) do
-        if source[k]~=nil and type(source[k])==type(v) then
-            local range=FARM_RANGES[k]
-            if type(v)=="number" then
-                if v==v and math.abs(v)~=math.huge then source[k]=range and math.clamp(v,range[1],range[2]) or v end
-            elseif type(v)~="table" then source[k]=v end
+        if t[k]~=nil and type(t[k])==type(v) and type(v)~="table" then
+            if type(v)~="number" or (v==v and math.abs(v)~=math.huge) then
+                local range=key=="Cfg" and FARM_RANGES[k]
+                t[k]=range and math.clamp(v,range[1],range[2]) or v
+            end
         end
     end
-    SH.Session[key]=source
-    local previous=""
+    SH.SlashSession[key]=t
     task.spawn(function()
+        local last=""
         while Alive() do
-            local ok,encoded=pcall(function() return HttpService:JSONEncode(SH.Session) end)
-            if ok and encoded~=previous then
-                if SH.FlushSession() then previous=encoded end
-            end
-            task.wait(0.25)
+            local ok,json=pcall(function() return HttpService:JSONEncode(SH.SlashSession) end)
+            if ok and json~=last and SH.SlashFlush() then last=json end
+            task.wait(.25)
         end
     end)
-    return source
 end
+
 SH.say("Loading interface...")
 local okLib, Cascade = pcall(function()
-    local cache="SmoothHub_Cascade_Official_UI.luau"
-    local errors={}
-    local function compile(source,label)
-        if type(source)~="string" or #source<100 then errors[#errors+1]=label..": empty/short response"; return nil end
-        local fn,err=loadstring(source)
-        if not fn then errors[#errors+1]=label..": "..tostring(err); return nil end
-        local ok,lib=pcall(fn)
-        if not ok or type(lib)~="table" or type(lib.New)~="function" or type(lib.Components)~="table" or type(lib.Components.Section)~="function" or type(lib.Accents)~="table" or type(lib.Symbols)~="table" then
-            errors[#errors+1]=label..": incompatible library "..tostring(lib); return nil
-        end
-        return lib
-    end
-    if type(readfile)=="function" and type(isfile)=="function" then
-        local ok,source=pcall(function() if isfile(cache) then return readfile(cache) end end)
-        if ok and source then local lib=compile(source,"Local UI cache"); if lib then return lib end end
-    end
-    local urls={
-        "https://github.com/cascadeui/Cascade/releases/latest/download/dist.luau"
-    }
-    for _,url in ipairs(urls) do
-        local ok,source=pcall(function() return game:HttpGetAsync(url) end)
-        if ok then
-            local lib=compile(source,url)
-            if lib then
-                if type(writefile)=="function" then pcall(writefile,cache,source) end
-                return lib
-            end
-        else errors[#errors+1]=url..": "..tostring(source) end
-    end
-    error(table.concat(errors,"\n"))
+    return loadstring(game:HttpGet("https://github.com/cascadeui/Cascade/releases/latest/download/dist.luau"))()
 end)
-if not okLib then
-    warn("[Smooth Hub] Original UI could not load:\n"..tostring(Cascade))
-    local gui=Instance.new("ScreenGui"); gui.Name="SmoothHubLoadFailure"; gui.ResetOnSpawn=false; gui.Parent=PlayerGui
-    local label=Instance.new("TextLabel"); label.Size=UDim2.fromScale(.85,.55); label.Position=UDim2.fromScale(.075,.2)
-    label.BackgroundColor3=Color3.fromRGB(24,18,24); label.TextColor3=Color3.fromRGB(255,220,220)
-    label.TextWrapped=true; label.TextSize=15; label.Font=Enum.Font.Gotham
-    label.Text="Official Cascade UI could not initialize. No farm was started.\n\n"..tostring(Cascade).."\n\nIf you have the original Ui.luau, save it in your executor workspace as SmoothHub_Cascade_Official_UI.luau and reexecute."
-    label.Parent=gui
+if not okLib or type(Cascade) ~= "table" then
+    SH.say("Could not load the interface. Check your internet connection.")
+    SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "Smooth Hub", Text = "โหลด UI ไม่สำเร็จ (เช็คเน็ต/ลิงก์ GitHub)", Duration = 8,
+        })
+    end)
     return
 end
 SH.say("Interface ready.")
@@ -1291,8 +1241,7 @@ do
         end
     end
 end
-Cfg = SH.TrackSession(Cfg, "Cfg")
-SH.FlushSession()
+SH.SlashTrack(Cfg,"Cfg")
 Cfg.JoinDelay = ClampDelay(Cfg.JoinDelay)
 Cfg.MissionJoinDelay = ClampDelay(Cfg.MissionJoinDelay)
 Cfg.RaidJoinDelay = ClampDelay(Cfg.RaidJoinDelay)
@@ -3449,22 +3398,11 @@ do
     AddFarmToggle(MainForm, "Damage Multiplier ( x10 )", "Deal 10x damage to Titans.", "DamageMultiplier", "OnDamageMultiplier")
     do
         local row=MainForm:Row()
-        row:Left():TitleStack({Title="Farm diagnostics",Subtitle="Requests are not confirmed kills. Check this status if farming stalls."})
-        local status=row:Right():Label({Text="Starting diagnostics"})
+        row:Left():TitleStack({Title="Auto Farm remote status",Subtitle="Remote-only; napes expanded locally to at least 35 studs. Damage is not confirmed."})
+        local label=row:Right():Label({Text="Off"})
         task.spawn(function()
-            local watched,lastHP,lastChange=nil,nil,os.clock()
             while Alive() do
-                local mode=Cfg.AutoFarmThunder and "Thunder Spears" or (Cfg.AutoFarm and "Blades" or "Off")
-                local target=Farm.Blades and Farm.Blades.Target
-                local hum=target and target:FindFirstChildOfClass("Humanoid")
-                if target~=watched then watched=target; lastHP=hum and hum.Health; lastChange=os.clock() end
-                if hum and hum.Health~=lastHP then lastHP=hum.Health; lastChange=os.clock() end
-                local note=Farm.LastAttackIssue or ""
-                if mode~="Off" and hum and hum.Health>0 and os.clock()-lastChange>8 then
-                    note="No observed HP change for 8s; hits may be rejected"
-                end
-                local state=Farm.Blades and Farm.Blades.Status or "Initializing"
-                pcall(function() status.Text=mode.." | "..tostring(state).."\n"..SH.SaveStatus.."\n"..note end)
+                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..SH.SlashSaveStatus end)
                 task.wait(.5)
             end
         end)
@@ -3473,7 +3411,7 @@ do
     AddFarmSlider(MainForm, function(v) return "Set Start Farm ( " .. v .. "s )" end,
         "Wait after spawning before farming. 0 = start right away.", "StartDelay", "OnStartDelay")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " studs )" end,
-        "Height above the nape (0-500). Start at 6; large offsets may prevent valid hits.", "FlyHeight", "OnFlyHeight")
+        "How high you fly above the titan (150-500). Higher is safer.", "FlyHeight", "OnFlyHeight")
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Range ( " .. v .. " studs )" end,
     -- [hidden] "Auto Farm [ TS ]: hits every titan within this distance of you (50-10000).", "ThunderRange", nil)
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Targets per Shot ( " .. ((v <= 0 or v >= 200) and "All" or v) .. " )" end,
@@ -3532,8 +3470,8 @@ do
     local ATTACK_GAP = { [0] = 0.4, [1] = 0.8, [2] = 0.3, [3] = 0.2, [4] = 0.12, [5] = 0.08 }
     local OTHER_PARTS = { "Eyes", "LeftArm", "RightArm", "LeftLeg", "RightLeg" }
     local ARRIVE_DIST = 12
-    local ATTACK_BEFORE_ARRIVE = false
-    local ORBIT_ON = false
+    local ATTACK_BEFORE_ARRIVE = true
+    local ORBIT_ON = true
     local ORBIT_RADIUS = 14
     local ORBIT_SPEED = 1.6
     local ORBIT_BOB = 5
@@ -3783,8 +3721,7 @@ do
         return best
     end
     local function Running()
-        -- Auto Farm is handled by the stationary spawn scanner below.
-        if Cfg.AutoFarm or Cfg.AutoFarmThunder then return false end
+        if Cfg.AutoFarm or Cfg.AutoFarmThunder then return false end -- handled by input-driven worker
         if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) or not Farm.CanUseHere() then return false end
         if Farm.Refilling then return false end
         if Farm.FailSafeActive then return false end
@@ -3798,7 +3735,7 @@ do
     local function Reps(nParts)
         local now=os.clock()
         if now-budgetStart>=1 then budgetStart,budgetUsed=now,0 end
-        local n=math.max(1,nParts)
+        local n=math.max(nParts,1)
         local reps=math.max(0,math.min(Mult(),math.floor((REMOTE_BUDGET-budgetUsed)/n)))
         budgetUsed=budgetUsed+reps*n
         return reps
@@ -3806,12 +3743,12 @@ do
 
     -- 📦 ตัวส่ง remote เป็นชุด: เข้าคิวก่อน แล้วปล่อยทีละ NET_BATCH คำสั่งต่อเฟรม (เรียงลำดับเดิมทุกคำสั่ง)
     -- แทนที่จะยิงร้อยกว่าคำสั่งในเฟรมเดียว | คิวยาวเกิน NET_QUEUE_MAX = ข้ามรอบโจมตีนั้น กันคิวค้างสะสม
-    local NET_BATCH = 6
+    local NET_BATCH = 12
     local NET_QUEUE_MAX = 400
     local netQ, netHead, netTail = {}, 1, 0
     local function NetPending() return netTail - netHead + 1 end
     local function NetPush(remote, ...)
-        if NetPending() >= NET_QUEUE_MAX then return false end
+        if NetPending()>=NET_QUEUE_MAX then return false end
         netTail = netTail + 1
         netQ[netTail] = { remote = remote, args = table.pack(...) }
     end
@@ -3835,12 +3772,11 @@ do
     end)
     local function Slash(parts)
         local remote = Post()
-        if not remote then Farm.LastAttackIssue="Missing POST remote"; return false end
-        Farm.LastAttackIssue=nil
+        if not remote then return false end
         if typeof(parts) == "Instance" then parts = { parts } end
         if NetPending() > NET_QUEUE_MAX then return false end
         local reps = Reps(#parts)
-        if reps < 1 or NetPending()+reps*#parts+2 > NET_QUEUE_MAX then return false end
+        if reps<1 or NetPending()+reps*#parts+2>NET_QUEUE_MAX then return false end
         NetPush(remote, "Attacks", "Slash", true)
         for r = 1, reps do
             for i, part in ipairs(parts) do
@@ -4048,8 +3984,7 @@ do
     local fireBusy, fireBusyAt = false, 0
     local function Spear(parts)
         local get, remote = Get(), Post()
-        if not get or not remote then Farm.LastAttackIssue="Missing GET/POST remote"; return false end
-        Farm.LastAttackIssue=nil
+        if not get or not remote then return false end
         local left = SpearsLeft()
         if left ~= nil and left <= 0 then return false end
         if stuck > 0 and left ~= stuckCount then stuck = 0 end
@@ -4088,7 +4023,6 @@ do
         if left ~= nil and after ~= nil and after >= left then
             usedIds[id] = nil
             stuck, stuckCount, stuckAt = stuck + 1, left, os.clock()
-            Farm.LastAttackIssue="Thunder S_Fire rejected; check weapon, ammo, and game compatibility"
             if stuck == 4 then print("[SmoothHub][Thunder] S_Fire not accepted 4 times in a row, spears left =", tostring(left), "id =", tostring(id)) end
             return false
         end
@@ -4439,69 +4373,83 @@ do
     -- ⚔️ Auto Clear Wave: ใช้ระบบโจมตีเดียวกับ Auto Farm [ Blades ] แต่ "ยืนอยู่กับที่" ไม่บินไปหาไททัน
     -- โจมตีไททันที่อยู่ในระยะ (Cfg.ClearWaveRange) จากตำแหน่งปัจจุบัน | เปิดตัวนี้ = Auto Farm [ Blades ] / [ TS ] ถูกปิดให้อัตโนมัติ
 
-    -- Stationary Auto Farm: scans every replicated target, without a distance
-    -- filter or user target-count cap. Batches bound traffic, not total targets.
-    -- No claim that the server accepts remote hits or permits damage in all phases.
-    task.spawn(function()
-        local cursor=1
-        local nextScan=0
-        local targets={}
-        local function scan()
-            local folder=workspace:FindFirstChild("Titans")
-            local found,seen={},{}
-            if folder then
-                for _,item in ipairs(folder:GetDescendants()) do
-                    if item:IsA("Model") and not seen[item] and TitanAlive(item) then
-                        local nape=NapeOf(item)
-                        if nape and nape:IsA("BasePart") and not seen[nape] then
-                            seen[item]=true; seen[nape]=true
-                            found[#found+1]={model=item,part=nape}
-                        end
-                    end
+
+    -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
+    Farm.InputStatus="Off"
+    local expanded=setmetatable({}, {__mode="k"})
+    local function restoreNapes()
+        for part,old in pairs(expanded) do
+            if part.Parent then
+                pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end)
+            end
+            expanded[part]=nil
+        end
+    end
+    local function enlarge(part)
+        if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
+        local original=expanded[part].Size
+        part.Size=Vector3.new(math.max(35,original.X),math.max(35,original.Y),math.max(35,original.Z))
+        part.CanCollide=false
+    end
+    local function collect()
+        local folder=workspace:FindFirstChild("Titans")
+        local list,seen={},{}
+        for _,t in ipairs(folder and folder:GetDescendants() or {}) do
+            if t:IsA("Model") and TitanAlive(t) then
+                local n=NapeOf(t)
+                if n and not seen[n] then
+                    seen[n]=true
+                    local ok,err=pcall(enlarge,n)
+                    if not ok then Farm.LastNapeError=tostring(err) end
+                    list[#list+1]={model=t,part=n}
                 end
             end
-            targets=found
-            if cursor>#targets then cursor=1 end
         end
+        return list
+    end
+    task.spawn(function()
+        local cursor=1
+        local targets={}
+        local scanAt=0
         while Alive() do
-            task.wait(.15)
+            task.wait(.4)
             local ok,err=pcall(function()
-                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) then return end
-                if not Farm.CanUseHere() then B.Status="Waiting for playable map"; return end
-                if not MyRoot() then B.Status="Waiting for living character"; return end
-                if Farm.Refilling then B.Status="Paused: refilling"; return end
-                if Farm.FailSafeActive then B.Status="Paused: fail safe"; return end
-                if Farm.PauseUntil and Farm.PauseUntil>os.clock() then B.Status="Paused"; return end
-                if os.clock()>=nextScan then scan(); nextScan=os.clock()+.5 end
-                if #targets==0 then B.Target=nil; B.Status="Waiting for replicated titans"; return end
-                if NetPending()>NET_QUEUE_MAX-130 then B.Status="Waiting for network queue"; return end
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) then
+                    restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
+                end
+                if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
+                if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
+                if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
+                    Farm.InputStatus="Paused by refill/fail-safe"; return
+                end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.8 end
+                if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
+                if NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded network queue"; return end
                 local batch={}
                 local inspected=0
                 while inspected<#targets and #batch<12 do
                     if cursor>#targets then cursor=1 end
                     local item=targets[cursor]; cursor=cursor+1; inspected=inspected+1
-                    if item.part.Parent and item.model.Parent and TitanAlive(item.model) then
-                        batch[#batch+1]=item.part
-                        B.Target=item.model
+                    if item.part.Parent and TitanAlive(item.model) then
+                        batch[#batch+1]=item.part; B.Target=item.model
                     end
                 end
-                if #batch==0 then nextScan=0; B.Status="Refreshing targets"; return end
+                if #batch==0 then scanAt=0; Farm.InputStatus="Refreshing targets"; return end
+                local sent
                 if Cfg.AutoFarmThunder then
-                    B.Status="Requesting Thunder hits: "..#batch.." / "..#targets
-                    Spear(batch)
+                    sent=Spear(batch)
                 else
-                    if Farm.BladesBusy and Farm.BladesBusy() then B.Status="Reloading blades"; return end
-                    B.Status="Requesting blade hits: "..#batch.." / "..#targets
-                    Slash(batch)
+                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
+                    sent=Slash(batch)
                 end
+                Farm.InputStatus=(Cfg.AutoFarmThunder and "Thunder" or "Blade")..": "..
+                    (sent and "requests queued" or "request not sent; check ammo/remote/queue")..
+                    " | "..#targets.." napes detected | client size >=35"
+                B.Status=Farm.InputStatus
             end)
-            if not ok then
-                Farm.LastAttackIssue=tostring(err)
-                B.Status="Farm error (see diagnostics)"
-                warn("[Smooth Hub][Auto Farm] "..tostring(err))
-                task.wait(1)
-            end
+            if not ok then Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus; warn(Farm.InputStatus); task.wait(1) end
         end
+        restoreNapes()
     end)
 
     Farm.ClearWaveStatus = "Off"
@@ -13561,8 +13509,7 @@ ConfigStore.BuildDefault(UiSync.Defaults.Hub)
 SettingsStore.Restore(HubConfig, SavedData.Hub)
 ConfigStore.ApplyHub(HubConfig, ConfigStore.AutoloadSnapshot())
 if SH.LegacyHub then ConfigStore.ApplyHub(HubConfig, { Hub = SH.LegacyHub }) end
-HubConfig = SH.TrackSession(HubConfig, "Hub")
-SH.FlushSession()
+SH.SlashTrack(HubConfig,"Hub")
 SH.say("Settings loaded.")
 local AUTOEXEC_URL = "https://githubusercontent.smoothhubv1.workers.dev/raw/9949e6715b89f8c1d7b1/Attack-on-Titan-Revolution.lua"
 UiSync.ReloadUrl = AUTOEXEC_URL
@@ -16762,7 +16709,7 @@ SH.Guard("language", function()
             ["Turn Auto Refill on or off."] = "เปิดหรือปิดเติมของอัตโนมัติ",
             ["Choose what to refill: Blade, Thunder Spears, or both."] = "เลือกสิ่งที่จะเติม: ใบมีด หอกสายฟ้า หรือทั้งสองอย่าง",
             ["Wait after spawning before farming. 0 = start right away."] = "รอหลังเกิดก่อนเริ่มฟาร์ม 0 = เริ่มทันที",
-            ["Height above the nape (0-500). Start at 6; large offsets may prevent valid hits."] = "ความสูงที่บินเหนือไททัน (150-500) ยิ่งสูงยิ่งปลอดภัย",
+            ["How high you fly above the titan (150-500). Higher is safer."] = "ความสูงที่บินเหนือไททัน (150-500) ยิ่งสูงยิ่งปลอดภัย",
             ["A mission can't finish sooner than this. 0 = off."] = "ภารกิจจะจบเร็วกว่าค่านี้ไม่ได้ 0 = ปิด",
             ["Lose on purpose after this many wins in a row. 0 = never."] = "แพ้โดยตั้งใจหลังชนะติดกันครบตามจำนวนนี้ 0 = ไม่เคย",
             ["How long the key is held in Hold mode."] = "ระยะเวลาที่กดปุ่มค้างในโหมดกดค้าง",
@@ -16860,7 +16807,7 @@ SH.Guard("language", function()
             ["Turn Auto Refill on or off."] = "Activa o desactiva la Auto Recarga.",
             ["Choose what to refill: Blade, Thunder Spears, or both."] = "Elige qué rellenar: Espada, Lanzas de Trueno o ambas.",
             ["Wait after spawning before farming. 0 = start right away."] = "Espera tras aparecer antes de farmear. 0 = empezar de inmediato.",
-            ["Height above the nape (0-500). Start at 6; large offsets may prevent valid hits."] = "Qué altura vuelas sobre el titán (150-500). Más alto es más seguro.",
+            ["How high you fly above the titan (150-500). Higher is safer."] = "Qué altura vuelas sobre el titán (150-500). Más alto es más seguro.",
             ["A mission can't finish sooner than this. 0 = off."] = "Una misión no puede terminar antes de este tiempo. 0 = desactivado.",
             ["Lose on purpose after this many wins in a row. 0 = never."] = "Pierde a propósito tras esta cantidad de victorias seguidas. 0 = nunca.",
             ["How long the key is held in Hold mode."] = "Cuánto tiempo se mantiene la tecla en modo Mantener.",
@@ -16958,7 +16905,7 @@ SH.Guard("language", function()
             ["Turn Auto Refill on or off."] = "Bật hoặc tắt Tự động nạp lại.",
             ["Choose what to refill: Blade, Thunder Spears, or both."] = "Chọn thứ cần nạp lại: Blade, Thunder Spears hoặc cả hai.",
             ["Wait after spawning before farming. 0 = start right away."] = "Chờ sau khi xuất hiện rồi mới farm. 0 = bắt đầu ngay.",
-            ["Height above the nape (0-500). Start at 6; large offsets may prevent valid hits."] = "Độ cao bay trên titan (150-500). Càng cao càng an toàn.",
+            ["How high you fly above the titan (150-500). Higher is safer."] = "Độ cao bay trên titan (150-500). Càng cao càng an toàn.",
             ["A mission can't finish sooner than this. 0 = off."] = "Nhiệm vụ không thể kết thúc sớm hơn mức này. 0 = tắt.",
             ["Lose on purpose after this many wins in a row. 0 = never."] = "Cố tình thua sau khi thắng liên tiếp chừng này lần. 0 = không bao giờ.",
             ["How long the key is held in Hold mode."] = "Thời gian giữ phím trong chế độ Giữ.",
@@ -18620,4 +18567,3 @@ if SH.DEV then
     _G.SmoothHubSpin = SH.Spin
 end
 SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")
-_G.SmoothHubRepairFlush = SH.FlushSession
