@@ -3982,7 +3982,11 @@ do
         return stuck >= 4 and SpearsLeft() == stuckCount
     end
     local fireBusy, fireBusyAt = false, 0
+    local lastFarmSpearAt=0
     local function Spear(parts)
+        if os.clock()-lastFarmSpearAt<2 then return false end
+        if type(parts)~="table" or not parts[1] or parts[1].Name~="Nape" then return false end
+        parts={parts[1]} -- one nape per spear; no explosion multiplier
         local get, remote = Get(), Post()
         if not get or not remote then return false end
         local left = SpearsLeft()
@@ -3997,6 +4001,7 @@ do
             end
         end
         if fireBusy and os.clock() - fireBusyAt < 10 then return false end -- S_Fire ก่อนหน้ายังรอเซิร์ฟเวอร์อยู่
+        lastFarmSpearAt=os.clock()
         local id = NextSpearId(left)
         if id == nil then
             usedIds = {}
@@ -4027,7 +4032,7 @@ do
             return false
         end
         stuck = 0
-        local reps = Reps(#parts)
+        local reps = 1
         if NetPending() <= NET_QUEUE_MAX then
             for r = 1, reps do
                 for i, part in ipairs(parts) do
@@ -4374,121 +4379,127 @@ do
     -- โจมตีไททันที่อยู่ในระยะ (Cfg.ClearWaveRange) จากตำแหน่งปัจจุบัน | เปิดตัวนี้ = Auto Farm [ Blades ] / [ TS ] ถูกปิดให้อัตโนมัติ
 
 
-    -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
+    -- Farm-only controller: near-nape hover and paced nape-only attacks.
     Farm.InputStatus="Off"
     local expanded=setmetatable({}, {__mode="k"})
-    local function restoreNapes()
+    local hoverRoot,hoverPosition,hoverGyro,oldRotate=nil,nil,nil,nil
+    local function stopHover()
+        if hoverPosition then hoverPosition:Destroy(); hoverPosition=nil end
+        if hoverGyro then hoverGyro:Destroy(); hoverGyro=nil end
+        local hum=hoverRoot and hoverRoot.Parent and hoverRoot.Parent:FindFirstChildOfClass("Humanoid")
+        if hum and oldRotate~=nil then hum.AutoRotate=oldRotate end
+        hoverRoot=nil; oldRotate=nil
+    end
+    local function restore()
+        stopHover()
         for part,old in pairs(expanded) do
-            if part.Parent then
-                pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end)
-            end
+            if part.Parent then pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end) end
             expanded[part]=nil
         end
     end
-    local function enlarge(part)
+    local function expand(part)
         if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
-        local original=expanded[part].Size
-        part.Size=Vector3.new(math.max(35,original.X),math.max(35,original.Y),math.max(35,original.Z))
+        local v=expanded[part].Size
+        part.Size=Vector3.new(math.max(35,v.X),math.max(35,v.Y),math.max(35,v.Z))
         part.CanCollide=false
     end
-    local function collect()
-        local folder=workspace:FindFirstChild("Titans")
-        local list,seen={},{}
-        for _,t in ipairs(folder and folder:GetDescendants() or {}) do
-            if t:IsA("Model") and TitanAlive(t) then
-                local n=NapeOf(t)
-                if n and not seen[n] then
-                    seen[n]=true
-                    local ok,err=pcall(enlarge,n)
-                    if not ok then Farm.LastNapeError=tostring(err) end
-                    list[#list+1]={model=t,part=n}
-                end
-            end
+    local function hover(root,nape,dt)
+        if hoverRoot~=root or not hoverPosition or not hoverPosition.Parent then
+            stopHover(); hoverRoot=root
+            local hum=root.Parent:FindFirstChildOfClass("Humanoid")
+            if hum then oldRotate=hum.AutoRotate; hum.AutoRotate=false end
+            hoverPosition=Instance.new("BodyPosition")
+            hoverPosition.Name="SmoothFarmHover"; hoverPosition.MaxForce=Vector3.new(1e6,1e6,1e6)
+            hoverPosition.P=12000; hoverPosition.D=1200; hoverPosition.Position=root.Position; hoverPosition.Parent=root
+            hoverGyro=Instance.new("BodyGyro")
+            hoverGyro.Name="SmoothFarmFacing"; hoverGyro.MaxTorque=Vector3.new(1e6,1e6,1e6)
+            hoverGyro.P=9000; hoverGyro.D=600; hoverGyro.Parent=root
         end
-        return list
+        local desired=nape.Position+nape.CFrame.LookVector*10+Vector3.new(0,8,0)
+        local delta=desired-root.Position
+        local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,30,180)
+        local step=math.min(delta.Magnitude,speed*math.min(dt,.1))
+        hoverPosition.Position=delta.Magnitude>.01 and root.Position+delta.Unit*step or desired
+        hoverGyro.CFrame=CFrame.lookAt(root.Position,nape.Position)
+        return (root.Position-nape.Position).Magnitude<=24
     end
-
-    -- Dedicated farm transaction; original remote names/arguments retained.
-    -- This bypasses the shared queue, not server validation.
-    local function farmBladeAttack(parts)
+    local function blade(nape)
         local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then
-            return false,"POST RemoteEvent unavailable"
-        end
-        local sent=0
+        if not remote or not remote:IsA("RemoteEvent") then return false,"POST remote missing" end
+        local tool=LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
         local started=false
         local ok,err=pcall(function()
-            remote:FireServer("Attacks","Slash",true)
-            started=true
-            task.wait(.06)
-            if not Alive() or not (Cfg.AutoFarm or Cfg.AutoFarmSmart) then return end
-            for _,part in ipairs(parts) do
-                if part.Parent and part:IsA("BasePart") then
-                    remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
-                    sent=sent+1
-                end
+            -- Tool activation runs its own input-independent handler if this
+            -- game's weapon is a Tool. No screen/mouse/keyboard input is sent.
+            if tool and tool.Enabled then tool:Activate() end
+            remote:FireServer("Attacks","Slash",true); started=true
+            task.wait(.12)
+            if Alive() and nape.Parent then
+                remote:FireServer("Hitboxes","Register",nape,143+math.random()*10,.26+math.random()*.25)
             end
         end)
-        local ended,endError=true,nil
-        if started then
-            ended,endError=pcall(function() remote:FireServer("Attacks","Slash",false) end)
-        end
-        if not ok or not ended then return false,tostring(err or endError) end
-        B.Hits=B.Hits+sent
-        return sent>0,"sent "..sent.." nape requests; damage unconfirmed"
+        if tool then pcall(function() tool:Deactivate() end) end
+        local ended,endErr=true,nil
+        if started then ended,endErr=pcall(function() remote:FireServer("Attacks","Slash",false) end) end
+        if not ok or not ended then return false,tostring(err or endErr) end
+        return true,"Blade sequence sent; damage unconfirmed"
     end
-
     task.spawn(function()
-        local cursor=1
-        local targets={}
-        local scanAt=0
-        local lastCharacter=nil
-        local lastErrorAt=0
+        local targets,scanAt,lastAttack,lastError={},0,0,0
+        local target=nil
+        local previous=os.clock()
         while Alive() do
-            task.wait(.25)
+            task.wait(.05)
+            local now=os.clock(); local dt=now-previous; previous=now
             local ok,err=pcall(function()
-                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then
-                    restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then restore(); Farm.InputStatus="Off"; return end
+                local root=MyRoot()
+                if not Farm.CanUseHere() or not root then stopHover(); Farm.InputStatus="Waiting for playable character"; return end
+                if Farm.Refilling or Farm.FailSafeActive or Farm.NpcBusy or (Farm.PauseUntil and Farm.PauseUntil>now) then
+                    stopHover(); Farm.InputStatus="Paused for existing refill/safety/NPC task"; return
                 end
-                if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
-                if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
-                if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
-                    Farm.InputStatus="Paused by refill/fail-safe"; return
-                end
-                if lastCharacter~=LocalPlayer.Character then lastCharacter=LocalPlayer.Character; scanAt=0; cursor=1 end
-                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.5 end
-                if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
-                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
-                if thunder and NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded Thunder queue"; return end
-                local batch={}
-                local inspected=0
-                while inspected<#targets and #batch<12 do
-                    if cursor>#targets then cursor=1 end
-                    local item=targets[cursor]; cursor=cursor+1; inspected=inspected+1
-                    if item.part.Parent and TitanAlive(item.model) then
-                        batch[#batch+1]=item.part; B.Target=item.model
+                if now>=scanAt then
+                    targets={}; scanAt=now+.5
+                    local folder=workspace:FindFirstChild("Titans")
+                    for _,t in ipairs(folder and folder:GetChildren() or {}) do
+                        if t:IsA("Model") and TitanAlive(t) then
+                            local n=NapeOf(t)
+                            if n then expand(n); targets[#targets+1]={model=t,nape=n} end
+                        end
                     end
                 end
-                if #batch==0 then scanAt=0; Farm.InputStatus="Refreshing targets"; return end
-                local sent,detail
-                if thunder then
-                    sent=Spear(batch)
-                else
-                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
-                    sent,detail=farmBladeAttack(batch)
+                if not target or not target.nape.Parent or not TitanAlive(target.model) then
+                    target=nil; local distance=math.huge
+                    for _,item in ipairs(targets) do
+                        if item.nape.Parent and TitanAlive(item.model) then
+                            local d=(item.nape.Position-root.Position).Magnitude
+                            if d<distance then target=item; distance=d end
+                        end
+                    end
                 end
-                Farm.InputStatus=(thunder and "Thunder" or "Blade")..": "..
-                    (detail or (sent and "requests queued; damage unconfirmed" or "request not sent; check ammo/remote/queue"))..
-                    " | "..#targets.." napes detected | client size >=35"
-                B.Status=Farm.InputStatus
+                if not target then stopHover(); Farm.InputStatus="Waiting for nape targets"; return end
+                B.Target=target.model
+                local close=hover(root,target.nape,dt)
+                B.Status=close and "Attacking" or "Flying to titan"
+                if not close then Farm.InputStatus="Approaching nape / hovering"; return end
+                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                local cooldown=thunder and 2 or .65
+                if now-lastAttack<cooldown then return end
+                lastAttack=now
+                if thunder then
+                    local sent=Spear({target.nape})
+                    Farm.InputStatus=sent and "One spear sent to nape; waiting before next shot" or "Spear not confirmed; check ammo/equipment"
+                else
+                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blades"; return end
+                    local sent,message=blade(target.nape); Farm.InputStatus=message
+                end
             end)
             if not ok then
-                Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus
-                if os.clock()-lastErrorAt>=5 then warn(Farm.InputStatus); lastErrorAt=os.clock() end
-                task.wait(1)
+                stopHover(); Farm.InputStatus="Farm error: "..tostring(err)
+                if now-lastError>=5 then warn(Farm.InputStatus); lastError=now end
             end
         end
-        restoreNapes()
+        restore()
     end)
 
     Farm.ClearWaveStatus = "Off"
