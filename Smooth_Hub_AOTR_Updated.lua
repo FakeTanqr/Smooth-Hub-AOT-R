@@ -3822,10 +3822,34 @@ do
             end
         end
     end
+    -- Enumerate actual canonical napes, without client range/target caps.
+    -- Does not bypass server distance, line-of-sight, or attack-state checks.
+    local allNapeCache,allNapeScanAt={},0
+    local function AllReplicatedNapes()
+        if os.clock()>=allNapeScanAt then
+            allNapeScanAt=os.clock()+.4
+            allNapeCache={}
+            local folder=workspace:FindFirstChild("Titans")
+            local seen={}
+            for _,model in ipairs(folder and folder:GetDescendants() or {}) do
+                if model:IsA("Model") and TitanAlive(model) then
+                    local part=NapeOf(model)
+                    if part and IsFarmNape(part) and not seen[part] then
+                        seen[part]=true; allNapeCache[#allNapeCache+1]=part
+                    end
+                end
+            end
+        end
+        local result={}
+        for _,part in ipairs(allNapeCache) do
+            if IsFarmNape(part) then result[#result+1]=part end
+        end
+        return result
+    end
     local function Slash(parts)
         if slashBusy or os.clock()<slashNextAt then return false end
-        parts=NapeOnly(parts)
-        if #parts==0 then Farm.LastAttackIssue="No canonical nape parts passed to Slash"; return false end
+        parts=AllReplicatedNapes()
+        if #parts==0 then Farm.LastAttackIssue="No canonical replicated napes found"; return false end
         local button=FindGameSlash()
         if not button then Farm.LastAttackIssue="Visible game Slash button not found"; Farm.InputStatus=Farm.LastAttackIssue; return false end
         local screen=button:FindFirstAncestorOfClass("ScreenGui")
@@ -3923,60 +3947,10 @@ do
         return n
     end
     local function NapesAround(main, spear)
-        local mainNape = NapeOf(main)
-        if not mainNape then return {} end
-        local cap = spear and SpearLimit() or HIT_COUNT
-        local rangeFrom, rangeMax = nil, Cfg.ThunderRange or 10000
-        if spear then
-            local rr = MyRoot()
-            rangeFrom = rr and rr.Position or mainNape.Position
-        end
-        local folder = workspace:FindFirstChild("Titans")
-        local boss, bossNape = nil, nil
-        if BOSS_ALWAYS and folder then
-            local c = folder:FindFirstChild("Colossal_Titan")
-            if c and c:IsA("Model") and TitanAlive(c) then
-                bossNape = NapeOf(c)
-                if bossNape then boss = c end
-            end
-        end
-        local others = {}
-        for _, t in ipairs(folder and folder:GetChildren() or {}) do
-            if t ~= main and t ~= boss and t:IsA("Model") and TitanAlive(t) then
-                local n = NapeOf(t)
-                if n and (not spear or (n.Position - rangeFrom).Magnitude <= rangeMax) then
-                    others[#others + 1] = { part = n, d = (n.Position - mainNape.Position).Magnitude }
-                end
-            end
-        end
-        table.sort(others, function(a, b) return a.d < b.d end)
-        local list = {}
-        if boss then
-            PRIORITY = { [bossNape] = true }
-            list[1] = bossNape
-            local hum = boss:FindFirstChildOfClass("Humanoid")
-            local ratio = hum and (hum.Health / math.max(hum.MaxHealth, 1)) or 1
-            if ratio <= BOSS_NORMAL_HP then
-                MultState.full, MultState.other = 1, 1
-            else
-                MultState.full, MultState.other = BOSS_MULT, BOSS_SMALL_MULT
-            end
-            local smallLeft = spear and (cap - 1) or math.min(RAID_SMALL, HIT_COUNT - 1)
-            if main ~= boss and smallLeft > 0 then
-                list[#list + 1] = mainNape
-                smallLeft = smallLeft - 1
-            end
-            for i = 1, math.min(smallLeft, #others) do
-                list[#list + 1] = others[i].part
-            end
-        else
-            MultState.full, MultState.other = DAMAGE_MULT, OTHER_MULT
-            PRIORITY = { [mainNape] = true }
-            list[1] = mainNape
-            for i = 1, math.min(cap - 1, #others) do
-                list[#list + 1] = others[i].part
-            end
-        end
+        local list=AllReplicatedNapes()
+        PRIORITY={}
+        for _,part in ipairs(list) do PRIORITY[part]=true end
+        MultState.full,MultState.other=DAMAGE_MULT,OTHER_MULT
         return list
     end
     local function TurnOffOther(key)
@@ -4110,7 +4084,7 @@ do
     end
     local fireBusy, fireBusyAt = false, 0
     local function Spear(parts)
-        parts=NapeOnly(parts)
+        parts=AllReplicatedNapes()
         if #parts==0 then return false end
         local get, remote = Get(), Post()
         if not get or not remote then return false end
