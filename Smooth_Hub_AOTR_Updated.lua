@@ -3721,7 +3721,7 @@ do
         return best
     end
     local function Running()
-        if Cfg.AutoFarm or Cfg.AutoFarmThunder then return false end -- handled by input-driven worker
+        if Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart then return false end -- handled by replacement worker
         if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) or not Farm.CanUseHere() then return false end
         if Farm.Refilling then return false end
         if Farm.FailSafeActive then return false end
@@ -3852,20 +3852,34 @@ do
         if #parts==0 then Farm.LastAttackIssue="No canonical replicated napes found"; return false end
         local button=FindGameSlash()
         if not button then Farm.LastAttackIssue="Visible game Slash button not found"; Farm.InputStatus=Farm.LastAttackIssue; return false end
-        local screen=button:FindFirstAncestorOfClass("ScreenGui")
-        local inset=(screen and screen.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
-        local pos=button.AbsolutePosition+button.AbsoluteSize/2+inset
-        local found=false
-        for _,obj in ipairs(PlayerGui:GetGuiObjectsAtPosition(pos.X,pos.Y)) do
-            if obj==button or obj:IsDescendantOf(button) then found=true; break end
-            if obj:IsA("GuiButton") then Farm.LastAttackIssue="Slash covered by another button"; return false end
+        local center=button.AbsolutePosition+button.AbsoluteSize/2
+        local inset=GuiService:GetGuiInset()
+        local pos=nil
+        -- Resolve the actual hit-tested location instead of assuming an inset
+        -- convention. Reject overlays; never click an unverified position.
+        for _,candidate in ipairs({center,center+inset,center-inset}) do
+            local found=false
+            local blocked=false
+            for _,obj in ipairs(PlayerGui:GetGuiObjectsAtPosition(candidate.X,candidate.Y)) do
+                if obj==button or obj:IsDescendantOf(button) then found=true; break end
+                if obj:IsA("GuiButton") then blocked=true; break end
+            end
+            if found and not blocked then pos=candidate; break end
         end
-        if not found then Farm.LastAttackIssue="Slash position not confirmed by GUI hit test"; return false end
+        if not pos then
+            Farm.LastAttackIssue="Slash input blocked: no unobstructed hit-tested position"
+            Farm.InputStatus=Farm.LastAttackIssue
+            return false
+        end
         local remote=Post()
         if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="Hit-registration RemoteEvent unavailable"; return false end
         slashBusy=true
         slashNextAt=os.clock()+.8
         local pressed=false
+        local inputObserved=false
+        local inputConnection=button.InputBegan:Connect(function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 then inputObserved=true end
+        end)
         local sent=0
         local samples={}
         for _,part in ipairs(parts) do
@@ -3912,6 +3926,7 @@ do
             local phaseOk,phaseErr=pcall(function() task.wait(.04); register() end)
             if not phaseOk then ok=false; err=phaseErr end
         end
+        inputConnection:Disconnect()
         slashBusy=false
         if not ok or not released then
             Farm.LastAttackIssue="Slash input/register error: "..tostring(err or releaseErr)
@@ -3921,7 +3936,8 @@ do
         end
         B.Hits=B.Hits+sent -- submitted requests, never confirmed kills
         Farm.LastAttackIssue=nil
-        Farm.InputStatus="Slash input sent; "..sent.." nape requests; checking observed HP"
+        Farm.LastSlashInputObserved=inputObserved
+        Farm.InputStatus=(inputObserved and "Slash button received mouse input; " or "Slash input delivery NOT observed; ")..sent.." nape requests; damage unconfirmed"
         task.delay(.8,function()
             if not Alive() then return end
             local changed=0
@@ -4501,7 +4517,7 @@ do
         while Alive() do
             task.wait(.4)
             local ok,err=pcall(function()
-                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) then
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then
                     restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
                 end
                 if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
@@ -4523,15 +4539,18 @@ do
                 end
                 if #batch==0 then scanAt=0; Farm.InputStatus="Refreshing targets"; return end
                 local sent
-                if Cfg.AutoFarmThunder then
+                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                if thunder then
                     sent=Spear(batch)
                 else
                     if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
                     sent=Slash(batch)
                 end
-                Farm.InputStatus=(Cfg.AutoFarmThunder and "Thunder" or "Blade")..": "..
-                    (sent and "requests queued" or "request not sent; check ammo/remote/queue")..
-                    " | "..#targets.." napes detected | client size >=35"
+                if thunder then
+                    Farm.InputStatus=sent and "Thunder requests queued; damage unconfirmed" or "Thunder waiting for ammo/cooldown/remote"
+                elseif not sent and Farm.LastAttackIssue then
+                    Farm.InputStatus=Farm.LastAttackIssue
+                end
                 B.Status=Farm.InputStatus
             end)
             if not ok then Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus; warn(Farm.InputStatus); task.wait(1) end
