@@ -3825,46 +3825,95 @@ do
     local function Slash(parts)
         if slashBusy or os.clock()<slashNextAt then return false end
         parts=NapeOnly(parts)
-        if #parts==0 then return false end
+        if #parts==0 then Farm.LastAttackIssue="No canonical nape parts passed to Slash"; return false end
         local button=FindGameSlash()
-        if not button then Farm.InputStatus="Visible game Slash button not found"; return false end
+        if not button then Farm.LastAttackIssue="Visible game Slash button not found"; Farm.InputStatus=Farm.LastAttackIssue; return false end
         local screen=button:FindFirstAncestorOfClass("ScreenGui")
         local inset=(screen and screen.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
         local pos=button.AbsolutePosition+button.AbsoluteSize/2+inset
+        local found=false
         for _,obj in ipairs(PlayerGui:GetGuiObjectsAtPosition(pos.X,pos.Y)) do
-            if obj==button or obj:IsDescendantOf(button) then break end
-            if obj:IsA("GuiButton") then Farm.InputStatus="Slash button covered; click skipped"; return false end
+            if obj==button or obj:IsDescendantOf(button) then found=true; break end
+            if obj:IsA("GuiButton") then Farm.LastAttackIssue="Slash covered by another button"; return false end
         end
+        if not found then Farm.LastAttackIssue="Slash position not confirmed by GUI hit test"; return false end
         local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then Farm.InputStatus="Hit-registration remote missing"; return false end
-        slashBusy=true; slashNextAt=os.clock()+.8
+        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="Hit-registration RemoteEvent unavailable"; return false end
+        slashBusy=true
+        slashNextAt=os.clock()+.8
         local pressed=false
-        local hits=0
-        local ok,err=pcall(function()
-            VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
-            pressed=true
-            -- Modest hold, not a claim of the game's maximum charge duration.
-            task.wait(.3)
-        end)
-        local released,releaseErr=true,nil
-        if pressed then released,releaseErr=pcall(function() VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0) end) end
-        if ok and released and Alive() then
-            ok,err=pcall(function()
-                for i,part in ipairs(parts) do
-                    if not Alive() then break end
-                    if IsFarmNape(part) then
-                        remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
-                        hits=hits+1
-                    end
-                    if i%8==0 then task.wait(.1) end
+        local sent=0
+        local samples={}
+        for _,part in ipairs(parts) do
+            local model=part.Parent
+            while model and model~=workspace do
+                if model:IsA("Model") and NapeOf(model)==part then
+                    local hum=model:FindFirstChildOfClass("Humanoid")
+                    if hum then samples[#samples+1]={hum=hum,hp=hum.Health} end
+                    break
                 end
+                model=model.Parent
+            end
+        end
+        local function register()
+            for i,part in ipairs(parts) do
+                if not Alive() then break end
+                if IsFarmNape(part) then
+                    remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
+                    sent=sent+1
+                end
+                if i%8==0 then task.wait(.1) end
+            end
+        end
+        local ok,err=xpcall(function()
+            -- Arm cleanup before sending input, so a partially failed press
+            -- still gets a release attempt. No direct Slash remote is invented.
+            pressed=true
+            VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+            task.wait(.12)
+            if not Alive() then return end
+            -- Previous build released first, then submitted every hit.
+            -- Submit during the held phase, not only after attack release.
+            register()
+        end,function(e) return tostring(e) end)
+        local released,releaseErr=true,nil
+        if pressed then
+            released,releaseErr=pcall(function()
+                VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0)
             end)
         end
+        -- Some controllers open their hit window on release. One bounded
+        -- second pass covers that phase; this is not a damage multiplier.
+        if ok and released and Alive() then
+            local phaseOk,phaseErr=pcall(function() task.wait(.04); register() end)
+            if not phaseOk then ok=false; err=phaseErr end
+        end
         slashBusy=false
-        if not ok or not released then Farm.InputStatus="Slash input failed: "..tostring(err or releaseErr); return false end
-        B.Hits=B.Hits+hits
-        Farm.InputStatus="Slash button clicked; nape-only requests sent; damage unconfirmed"
-        return hits>0
+        if not ok or not released then
+            Farm.LastAttackIssue="Slash input/register error: "..tostring(err or releaseErr)
+            Farm.InputStatus=Farm.LastAttackIssue
+            warn("[Smooth Hub] "..Farm.LastAttackIssue)
+            return false
+        end
+        B.Hits=B.Hits+sent -- submitted requests, never confirmed kills
+        Farm.LastAttackIssue=nil
+        Farm.InputStatus="Slash input sent; "..sent.." nape requests; checking observed HP"
+        task.delay(.8,function()
+            if not Alive() then return end
+            local changed=0
+            for _,sample in ipairs(samples) do
+                if sample.hum.Parent and sample.hum.Health<sample.hp then changed=changed+1 end
+            end
+            Farm.LastSlashObserved={Targets=#samples,HealthDecreased=changed,Requests=sent}
+            if #samples>0 and changed==0 then
+                local now=os.clock()
+                if now-(Farm.LastSlashWarningAt or 0)>=5 then
+                    Farm.LastSlashWarningAt=now
+                    warn("[Smooth Hub] Slash input completed, but no sampled target HP decrease was observed. Input or server hit validation remains unconfirmed.")
+                end
+            end
+        end)
+        return sent>0
     end
 
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
