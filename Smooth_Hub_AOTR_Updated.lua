@@ -260,7 +260,7 @@ local FARM_RANGES = {
     FlySpeed = { 600, 2000 },
     StartDelay = { 0, 60 },
     PartCooldown = { 4, 10 },
-    FlyHeight = { 150, 500 },
+    FlyHeight = { 0, 500 },
     BossSettle = { 0, 30 },
     LeaveAtWave = { 1, 50 },
     ShopMaxPrice = { 0, 1000000 },
@@ -3411,7 +3411,7 @@ do
     AddFarmSlider(MainForm, function(v) return "Set Start Farm ( " .. v .. "s )" end,
         "Wait after spawning before farming. 0 = start right away.", "StartDelay", "OnStartDelay")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " studs )" end,
-        "How high you fly above the titan (150-500). Higher is safer.", "FlyHeight", "OnFlyHeight")
+        "Hover height above the initial titan-field center (0-500 studs). Height does not guarantee safety or damage.", "FlyHeight", "OnFlyHeight")
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Range ( " .. v .. " studs )" end,
     -- [hidden] "Auto Farm [ TS ]: hits every titan within this distance of you (50-10000).", "ThunderRange", nil)
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Targets per Shot ( " .. ((v <= 0 or v >= 200) and "All" or v) .. " )" end,
@@ -3986,7 +3986,15 @@ do
     local function Spear(parts)
         if os.clock()-lastFarmSpearAt<2 then return false end
         if type(parts)~="table" or not parts[1] or parts[1].Name~="Nape" then return false end
-        parts={parts[1]} -- one nape per spear; no explosion multiplier
+        local valid={}
+        local seen={}
+        for _,part in ipairs(parts) do
+            if typeof(part)=="Instance" and part:IsA("BasePart") and part.Name=="Nape" and part.Parent and not seen[part] then
+                seen[part]=true; valid[#valid+1]=part
+            end
+        end
+        parts=valid
+        if #parts==0 or NetPending()+#parts>NET_QUEUE_MAX then return false end
         local get, remote = Get(), Post()
         if not get or not remote then return false end
         local left = SpearsLeft()
@@ -4379,7 +4387,7 @@ do
     -- โจมตีไททันที่อยู่ในระยะ (Cfg.ClearWaveRange) จากตำแหน่งปัจจุบัน | เปิดตัวนี้ = Auto Farm [ Blades ] / [ TS ] ถูกปิดให้อัตโนมัติ
 
 
-    -- Farm-only controller: near-nape hover and paced nape-only attacks.
+    -- Farm-only controller: fixed initial titan-center hover; all-nape attack sweeps.
     Farm.InputStatus="Off"
     local expanded=setmetatable({}, {__mode="k"})
     local hoverRoot,hoverPosition,hoverGyro,oldRotate=nil,nil,nil,nil
@@ -4403,7 +4411,9 @@ do
         part.Size=Vector3.new(math.max(35,v.X),math.max(35,v.Y),math.max(35,v.Z))
         part.CanCollide=false
     end
-    local function hover(root,nape,dt)
+    local centerAnchor=nil
+    local centerCharacter=nil
+    local function hover(root,center,dt)
         if hoverRoot~=root or not hoverPosition or not hoverPosition.Parent then
             stopHover(); hoverRoot=root
             local hum=root.Parent:FindFirstChildOfClass("Humanoid")
@@ -4415,15 +4425,17 @@ do
             hoverGyro.Name="SmoothFarmFacing"; hoverGyro.MaxTorque=Vector3.new(1e6,1e6,1e6)
             hoverGyro.P=9000; hoverGyro.D=600; hoverGyro.Parent=root
         end
-        local desired=nape.Position+nape.CFrame.LookVector*10+Vector3.new(0,8,0)
+        local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
+        local desired=center+Vector3.new(0,height,0)
         local delta=desired-root.Position
         local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,30,180)
         local step=math.min(delta.Magnitude,speed*math.min(dt,.1))
         hoverPosition.Position=delta.Magnitude>.01 and root.Position+delta.Unit*step or desired
-        hoverGyro.CFrame=CFrame.lookAt(root.Position,nape.Position)
-        return (root.Position-nape.Position).Magnitude<=24
+        local look=Vector3.new(center.X,root.Position.Y,center.Z)
+        if (look-root.Position).Magnitude>.1 then hoverGyro.CFrame=CFrame.lookAt(root.Position,look) end
+        return (root.Position-desired).Magnitude<=10
     end
-    local function blade(nape)
+    local function blade(napes)
         local remote=Post()
         if not remote or not remote:IsA("RemoteEvent") then return false,"POST remote missing" end
         local tool=LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
@@ -4434,8 +4446,14 @@ do
             if tool and tool.Enabled then tool:Activate() end
             remote:FireServer("Attacks","Slash",true); started=true
             task.wait(.12)
-            if Alive() and nape.Parent then
-                remote:FireServer("Hitboxes","Register",nape,143+math.random()*10,.26+math.random()*.25)
+            local emitted=0
+            for _,nape in ipairs(napes) do
+                if not Alive() or not (Cfg.AutoFarm or Cfg.AutoFarmSmart) then break end
+                if nape.Parent and nape.Name=="Nape" then
+                    remote:FireServer("Hitboxes","Register",nape,143+math.random()*10,.26+math.random()*.25)
+                    emitted=emitted+1
+                    if emitted%8==0 then task.wait(.1) end
+                end
             end
         end)
         if tool then pcall(function() tool:Deactivate() end) end
@@ -4452,7 +4470,7 @@ do
             task.wait(.05)
             local now=os.clock(); local dt=now-previous; previous=now
             local ok,err=pcall(function()
-                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then restore(); Farm.InputStatus="Off"; return end
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then restore(); centerAnchor=nil; centerCharacter=nil; Farm.InputStatus="Off"; return end
                 local root=MyRoot()
                 if not Farm.CanUseHere() or not root then stopHover(); Farm.InputStatus="Waiting for playable character"; return end
                 if Farm.Refilling or Farm.FailSafeActive or Farm.NpcBusy or (Farm.PauseUntil and Farm.PauseUntil>now) then
@@ -4468,30 +4486,30 @@ do
                         end
                     end
                 end
-                if not target or not target.nape.Parent or not TitanAlive(target.model) then
-                    target=nil; local distance=math.huge
-                    for _,item in ipairs(targets) do
-                        if item.nape.Parent and TitanAlive(item.model) then
-                            local d=(item.nape.Position-root.Position).Magnitude
-                            if d<distance then target=item; distance=d end
-                        end
+                local napes={}
+                local total=Vector3.zero
+                for _,item in ipairs(targets) do
+                    if item.nape.Parent and TitanAlive(item.model) then
+                        napes[#napes+1]=item.nape; total=total+item.nape.Position
                     end
                 end
-                if not target then stopHover(); Farm.InputStatus="Waiting for nape targets"; return end
-                B.Target=target.model
-                local close=hover(root,target.nape,dt)
-                B.Status=close and "Attacking" or "Flying to titan"
-                if not close then Farm.InputStatus="Approaching nape / hovering"; return end
+                if #napes==0 then stopHover(); centerAnchor=nil; Farm.InputStatus="Waiting for nape targets"; return end
+                if not centerAnchor or centerCharacter~=LocalPlayer.Character then
+                    centerAnchor=total/#napes; centerCharacter=LocalPlayer.Character
+                end
+                B.Target=targets[1] and targets[1].model
+                hover(root,centerAnchor,dt)
+                B.Status="Center hover / all-nape requests"
                 local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
                 local cooldown=thunder and 2 or .65
                 if now-lastAttack<cooldown then return end
                 lastAttack=now
                 if thunder then
-                    local sent=Spear({target.nape})
-                    Farm.InputStatus=sent and "One spear sent to nape; waiting before next shot" or "Spear not confirmed; check ammo/equipment"
+                    local sent=Spear(napes)
+                    Farm.InputStatus=sent and "Spear requests queued for all detected napes; damage unconfirmed" or "Spear not confirmed; check ammo/equipment"
                 else
                     if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blades"; return end
-                    local sent,message=blade(target.nape); Farm.InputStatus=message
+                    local sent,message=blade(napes); Farm.InputStatus=message
                 end
             end)
             if not ok then
