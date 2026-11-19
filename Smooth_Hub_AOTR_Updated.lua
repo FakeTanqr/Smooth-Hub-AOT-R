@@ -1,8 +1,3 @@
--- Remote Farm / manual-purchase compatibility update.
--- Direct serialized blade requests; 35-stud local nape expansion retained.
--- Background wave purchase workers yield to processed user UI clicks.
--- No currency values are changed. No guarantee of infinite reach or server damage.
--- Source assertions only: NOT compiled or runtime-tested in Roblox.
 -- Remote-only Auto Farm update, based on the supplied original source.
 -- Main/hub first-launch toggles OFF; versioned automatic session saving.
 -- Official Cascade latest endpoint retained. Runtime download still required.
@@ -53,14 +48,6 @@ local IN_MENU = (game.PlaceId == MENU_PLACE_ID)
 local SH = { DEV = false }
 function SH.say(...) print("[Smooth Hub]", ...) end
 function SH.dbg(...) if SH.DEV then print(...) end end
-SH.ManualPurchaseUntil=0
-SH.ManualInputConnection=game:GetService("UserInputService").InputBegan:Connect(function(input,processed)
-    if processed and (input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch) then
-        SH.ManualPurchaseUntil=os.clock()+2
-    end
-end)
-function SH.ManualPurchaseActive() return os.clock()<SH.ManualPurchaseUntil end
-
 -- 🛡️ กันบล็อกสร้างหน้าจอ/ฟีเจอร์ที่พัง ไม่ให้ลากทั้งสคริปต์ล้ม (เดิม error บล็อกเดียว = แท็บที่เหลือว่างเปล่า)
 -- บล็อกที่พังจะพิมพ์ error ลง Console (F9) พร้อมเลขบรรทัดเดิม ส่วนบล็อกอื่นยังทำงานต่อ
 function SH.Guard(name, fn)
@@ -74,8 +61,6 @@ _G.SmoothHubReplayToken = token
 local function Alive() return _G.SmoothHubReplayToken == token end
 local AppRef = nil
 _G.SmoothHubCleanup = function()
-    pcall(function() if SH.ManualInputConnection then SH.ManualInputConnection:Disconnect() end end)
-    pcall(function() if SH.FarmRestore then SH.FarmRestore() end end)
     pcall(function() if AppRef and AppRef.Destroy then AppRef:Destroy() end end)
 end
 local Cfg = {
@@ -680,9 +665,7 @@ function SH.SlashFlush()
 end
 function SH.SlashTrack(t,key)
     local saved=SH.SlashSession[key]
-    for k,v in pairs(t) do
-        if type(v)=="boolean" and (k:match("^Auto") or k=="NoClip" or k=="HitAllParts" or k=="DamageMultiplier" or k=="RefillEnabled") then t[k]=false end
-    end
+    for k,v in pairs(t) do if type(v)=="boolean" then t[k]=false end end
     for k,v in pairs(saved) do
         if t[k]~=nil and type(t[k])==type(v) and type(v)~="table" then
             if type(v)~="number" or (v==v and math.abs(v)~=math.huge) then
@@ -690,10 +673,6 @@ function SH.SlashTrack(t,key)
                 t[k]=range and math.clamp(v,range[1],range[2]) or v
             end
         end
-    end
-    if key=="Cfg" and SH.SlashSession.ManualPurchaseMigration~=1 then
-        for _,k in ipairs({"AutoShop","AutoHealInjuries","AutoUpgradeChar","AutoUpgradeBlades","AutoRollBlessing"}) do t[k]=false end
-        SH.SlashSession.ManualPurchaseMigration=1
     end
     SH.SlashSession[key]=t
     task.spawn(function()
@@ -3764,7 +3743,7 @@ do
 
     -- 📦 ตัวส่ง remote เป็นชุด: เข้าคิวก่อน แล้วปล่อยทีละ NET_BATCH คำสั่งต่อเฟรม (เรียงลำดับเดิมทุกคำสั่ง)
     -- แทนที่จะยิงร้อยกว่าคำสั่งในเฟรมเดียว | คิวยาวเกิน NET_QUEUE_MAX = ข้ามรอบโจมตีนั้น กันคิวค้างสะสม
-    local NET_BATCH = 4
+    local NET_BATCH = 12
     local NET_QUEUE_MAX = 400
     local netQ, netHead, netTail = {}, 1, 0
     local function NetPending() return netTail - netHead + 1 end
@@ -3774,16 +3753,13 @@ do
         netQ[netTail] = { remote = remote, args = table.pack(...) }
     end
     local netConn
-    local sendWindow,sendCount=os.clock(),0
     netConn = RunService.Heartbeat:Connect(function()
         if not Alive() then
             if netConn then netConn:Disconnect() end
             return
         end
-        if os.clock()-sendWindow>=1 then sendWindow,sendCount=os.clock(),0 end
         local sent = 0
-        while netHead <= netTail and sent < NET_BATCH and sendCount<60 do
-            sendCount=sendCount+1
+        while netHead <= netTail and sent < NET_BATCH do
             local it = netQ[netHead]
             netQ[netHead] = nil
             netHead = netHead + 1
@@ -3794,39 +3770,25 @@ do
         end
         if netHead > netTail then netHead, netTail = 1, 0 end
     end)
-    local slashBusy=false
     local function Slash(parts)
-        if slashBusy then return false end
-        local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="POST RemoteEvent unavailable"; return false end
-        if typeof(parts)=="Instance" then parts={parts} end
-        if type(parts)~="table" or #parts==0 then return false end
-        slashBusy=true
-        local started=false
-        local hits=0
-        local ok,err=xpcall(function()
-            remote:FireServer("Attacks","Slash",true)
-            started=true
-            task.wait(.08)
-            if not Alive() then return end
-            for i,part in ipairs(parts) do
-                if i>12 then break end
-                if part and part.Parent and part:IsA("BasePart") then
-                    remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
-                    hits=hits+1
+        local remote = Post()
+        if not remote then return false end
+        if typeof(parts) == "Instance" then parts = { parts } end
+        if NetPending() > NET_QUEUE_MAX then return false end
+        local reps = Reps(#parts)
+        if reps<1 or NetPending()+reps*#parts+2>NET_QUEUE_MAX then return false end
+        NetPush(remote, "Attacks", "Slash", true)
+        for r = 1, reps do
+            for i, part in ipairs(parts) do
+                if PRIORITY[part] or r <= OtherMult() then
+                    NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
                 end
             end
-            task.wait(.06)
-        end,function(e) return tostring(e) end)
-        local ended,endErr=true,nil
-        if started then ended,endErr=pcall(function() remote:FireServer("Attacks","Slash",false) end) end
-        slashBusy=false
-        if not ok or not ended then Farm.LastAttackIssue=tostring(err or endErr); return false end
-        Farm.LastAttackIssue=nil
-        B.Hits=B.Hits+hits -- request count, not kills
-        return hits>0
+        end
+        NetPush(remote, "Attacks", "Slash", false)
+        B.Hits = B.Hits + #parts
+        return true
     end
-
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
@@ -4423,7 +4385,6 @@ do
             expanded[part]=nil
         end
     end
-    SH.FarmRestore=restoreNapes
     local function enlarge(part)
         if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
         local original=expanded[part].Size
@@ -4446,27 +4407,59 @@ do
         end
         return list
     end
+
+    -- Dedicated farm transaction; original remote names/arguments retained.
+    -- This bypasses the shared queue, not server validation.
+    local function farmBladeAttack(parts)
+        local remote=Post()
+        if not remote or not remote:IsA("RemoteEvent") then
+            return false,"POST RemoteEvent unavailable"
+        end
+        local sent=0
+        local started=false
+        local ok,err=pcall(function()
+            remote:FireServer("Attacks","Slash",true)
+            started=true
+            task.wait(.06)
+            if not Alive() or not (Cfg.AutoFarm or Cfg.AutoFarmSmart) then return end
+            for _,part in ipairs(parts) do
+                if part.Parent and part:IsA("BasePart") then
+                    remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
+                    sent=sent+1
+                end
+            end
+        end)
+        local ended,endError=true,nil
+        if started then
+            ended,endError=pcall(function() remote:FireServer("Attacks","Slash",false) end)
+        end
+        if not ok or not ended then return false,tostring(err or endError) end
+        B.Hits=B.Hits+sent
+        return sent>0,"sent "..sent.." nape requests; damage unconfirmed"
+    end
+
     task.spawn(function()
         local cursor=1
         local targets={}
         local scanAt=0
         local lastCharacter=nil
+        local lastErrorAt=0
         while Alive() do
-            task.wait(.1)
+            task.wait(.25)
             local ok,err=pcall(function()
                 if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then
                     restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
                 end
                 if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
                 if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
-                if Farm.NpcBusy or SH.ManualPurchaseActive() then Farm.InputStatus="Paused for manual UI / NPC purchase"; return end
                 if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
                     Farm.InputStatus="Paused by refill/fail-safe"; return
                 end
                 if lastCharacter~=LocalPlayer.Character then lastCharacter=LocalPlayer.Character; scanAt=0; cursor=1 end
-                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.25 end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.5 end
                 if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
-                if NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded network queue"; return end
+                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                if thunder and NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded Thunder queue"; return end
                 local batch={}
                 local inspected=0
                 while inspected<#targets and #batch<12 do
@@ -4477,20 +4470,23 @@ do
                     end
                 end
                 if #batch==0 then scanAt=0; Farm.InputStatus="Refreshing targets"; return end
-                local sent
-                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                local sent,detail
                 if thunder then
                     sent=Spear(batch)
                 else
                     if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
-                    sent=Slash(batch)
+                    sent,detail=farmBladeAttack(batch)
                 end
                 Farm.InputStatus=(thunder and "Thunder" or "Blade")..": "..
-                    (sent and "attack sequence sent (damage unconfirmed)" or "request not sent; check ammo/remote/queue")..
+                    (detail or (sent and "requests queued; damage unconfirmed" or "request not sent; check ammo/remote/queue"))..
                     " | "..#targets.." napes detected | client size >=35"
                 B.Status=Farm.InputStatus
             end)
-            if not ok then Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus; warn(Farm.InputStatus); task.wait(1) end
+            if not ok then
+                Farm.InputStatus="Farm error: "..tostring(err); B.Status=Farm.InputStatus
+                if os.clock()-lastErrorAt>=5 then warn(Farm.InputStatus); lastErrorAt=os.clock() end
+                task.wait(1)
+            end
         end
         restoreNapes()
     end)
@@ -4508,7 +4504,7 @@ do
         local partLast = setmetatable({}, { __mode = "k" })
         while Alive() do
             task.wait(ATTACK_GAP[Cfg.AttackSpeed or 0] or 0.4)
-            if Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart or not (Cfg.AutoClearWave and SH.PlayOn()) then
+            if not (Cfg.AutoClearWave and SH.PlayOn()) then
                 Farm.ClearWaveStatus = (Cfg.AutoClearWave and "Waiting for Auto Play") or "Off"
             elseif not Farm.CanUseHere() then
                 Farm.ClearWaveStatus = "Waiting for wave mode"
@@ -10597,13 +10593,13 @@ do
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
 
         local function ClickObj(obj, attempt)
-            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
+                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11092,7 +11088,6 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunShop()
-            if SH.ManualPurchaseActive() then return false end
             if shopping then return false end
             Farm.NpcAcquire("Shop") -- ต่อคิวตามลำดับความสำคัญ
             shopping = true
@@ -11256,13 +11251,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
-            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
+                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11448,7 +11443,6 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunHeal()
-            if SH.ManualPurchaseActive() then return false end
             if healing then return false end
             Farm.NpcAcquire("Heal") -- ต่อคิวตามลำดับความสำคัญ
             healing = true
@@ -11664,13 +11658,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
-            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
+                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -11874,7 +11868,7 @@ do
                     tries = 0
                 else
                     tries += 1
-                    if tries >= 3 then return bought, "unconfirmed" end
+                    if tries >= 3 then return bought, "gold" end
                 end
             end
             return bought, "limit"
@@ -11887,7 +11881,6 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunUpgrade()
-            if SH.ManualPurchaseActive() then return false end
             if upgrading then return false end
             Farm.NpcAcquire("Character") -- ต่อคิวตามลำดับความสำคัญ
             upgrading = true
@@ -11913,7 +11906,7 @@ do
                 end
                 if #noGold > 0 then
                     Farm.GoldFail("Character")
-                    SetStatus(("Bought %d. Purchase not confirmed for: %s"):format(total, table.concat(noGold, ", ")))
+                    SetStatus(("Bought %d. Not enough gold for: %s"):format(total, table.concat(noGold, ", ")))
                 else
                     SetStatus(("Done: bought %d upgrade(s)"):format(total))
                 end
@@ -12054,13 +12047,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
-            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
+                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -12226,7 +12219,6 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunUpgrade()
-            if SH.ManualPurchaseActive() then return false end
             if working then return false end
             Farm.NpcAcquire("Blades") -- ต่อคิวตามลำดับความสำคัญ
             working = true
@@ -12396,13 +12388,13 @@ do
         local function IsText(d) return d:IsA("TextLabel") or d:IsA("TextButton") end
         local function CenterOf(o) return o.AbsolutePosition + o.AbsoluteSize / 2 end
         local function ClickObj(obj, attempt)
-            if SH.ManualPurchaseActive() then return false end
             attempt = attempt or 1
             local isBtn = obj:IsA("GuiButton")
             local method = (attempt - 1) % 3 + 1
             if method == 1 and (not isBtn or type(firesignal) ~= "function") then method = 2 end
             if method == 1 then
                 pcall(firesignal, obj.Activated)
+                pcall(firesignal, obj.MouseButton1Click)
             elseif method == 2 then
                 local gui = obj:FindFirstAncestorOfClass("ScreenGui")
                 local inset = (gui and gui.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
@@ -12740,7 +12732,6 @@ do
             if ctl then pcall(function() ctl.Value = value end) end
         end
         local function RunRoll()
-            if SH.ManualPurchaseActive() then return false end
             if rolling then return false end
             Farm.NpcAcquire("Blessing") -- ต่อคิวตามลำดับความสำคัญ (ท้ายสุด ใช้ทองที่เหลือ)
             rolling = true
