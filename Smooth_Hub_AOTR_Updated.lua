@@ -260,7 +260,7 @@ local FARM_RANGES = {
     FlySpeed = { 600, 2000 },
     StartDelay = { 0, 60 },
     PartCooldown = { 4, 10 },
-    FlyHeight = { 0, 500 },
+    FlyHeight = { 150, 500 },
     BossSettle = { 0, 30 },
     LeaveAtWave = { 1, 50 },
     ShopMaxPrice = { 0, 1000000 },
@@ -3411,7 +3411,7 @@ do
     AddFarmSlider(MainForm, function(v) return "Set Start Farm ( " .. v .. "s )" end,
         "Wait after spawning before farming. 0 = start right away.", "StartDelay", "OnStartDelay")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " studs )" end,
-        "Hover height above the initial titan-field center (0-500 studs). Height does not guarantee safety or damage.", "FlyHeight", "OnFlyHeight")
+        "How high you fly above the titan (150-500). Higher is safer.", "FlyHeight", "OnFlyHeight")
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Range ( " .. v .. " studs )" end,
     -- [hidden] "Auto Farm [ TS ]: hits every titan within this distance of you (50-10000).", "ThunderRange", nil)
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Targets per Shot ( " .. ((v <= 0 or v >= 200) and "All" or v) .. " )" end,
@@ -3982,18 +3982,17 @@ do
         return stuck >= 4 and SpearsLeft() == stuckCount
     end
     local fireBusy, fireBusyAt = false, 0
-    local lastFarmSpearAt=0
+    local spearNextAt=0
     local function Spear(parts)
-        if os.clock()-lastFarmSpearAt<2 then return false end
-        if type(parts)~="table" or not parts[1] or parts[1].Name~="Nape" then return false end
-        local valid={}
-        local seen={}
+        if fireBusy or os.clock()<spearNextAt then return false end
+        if type(parts)~="table" then return false end
+        local napes,seen={},{}
         for _,part in ipairs(parts) do
             if typeof(part)=="Instance" and part:IsA("BasePart") and part.Name=="Nape" and part.Parent and not seen[part] then
-                seen[part]=true; valid[#valid+1]=part
+                seen[part]=true; napes[#napes+1]=part
             end
         end
-        parts=valid
+        parts=napes
         if #parts==0 or NetPending()+#parts>NET_QUEUE_MAX then return false end
         local get, remote = Get(), Post()
         if not get or not remote then return false end
@@ -4009,7 +4008,7 @@ do
             end
         end
         if fireBusy and os.clock() - fireBusyAt < 10 then return false end -- S_Fire ก่อนหน้ายังรอเซิร์ฟเวอร์อยู่
-        lastFarmSpearAt=os.clock()
+        spearNextAt=os.clock()+2
         local id = NextSpearId(left)
         if id == nil then
             usedIds = {}
@@ -4387,137 +4386,137 @@ do
     -- โจมตีไททันที่อยู่ในระยะ (Cfg.ClearWaveRange) จากตำแหน่งปัจจุบัน | เปิดตัวนี้ = Auto Farm [ Blades ] / [ TS ] ถูกปิดให้อัตโนมัติ
 
 
-    -- Farm-only controller: fixed initial titan-center hover; all-nape attack sweeps.
+    -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
     Farm.InputStatus="Off"
     local expanded=setmetatable({}, {__mode="k"})
-    local hoverRoot,hoverPosition,hoverGyro,oldRotate=nil,nil,nil,nil
-    local function stopHover()
-        if hoverPosition then hoverPosition:Destroy(); hoverPosition=nil end
-        if hoverGyro then hoverGyro:Destroy(); hoverGyro=nil end
-        local hum=hoverRoot and hoverRoot.Parent and hoverRoot.Parent:FindFirstChildOfClass("Humanoid")
-        if hum and oldRotate~=nil then hum.AutoRotate=oldRotate end
-        hoverRoot=nil; oldRotate=nil
-    end
-    local function restore()
-        stopHover()
+    local function restoreNapes()
         for part,old in pairs(expanded) do
-            if part.Parent then pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end) end
+            if part.Parent then
+                pcall(function() part.Size=old.Size; part.CanCollide=old.CanCollide end)
+            end
             expanded[part]=nil
         end
     end
-    local function expand(part)
+    local function enlarge(part)
         if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
-        local v=expanded[part].Size
-        part.Size=Vector3.new(math.max(35,v.X),math.max(35,v.Y),math.max(35,v.Z))
+        local original=expanded[part].Size
+        part.Size=Vector3.new(math.max(35,original.X),math.max(35,original.Y),math.max(35,original.Z))
         part.CanCollide=false
     end
-    local centerAnchor=nil
-    local centerCharacter=nil
-    local function hover(root,center,dt)
-        if hoverRoot~=root or not hoverPosition or not hoverPosition.Parent then
-            stopHover(); hoverRoot=root
-            local hum=root.Parent:FindFirstChildOfClass("Humanoid")
-            if hum then oldRotate=hum.AutoRotate; hum.AutoRotate=false end
-            hoverPosition=Instance.new("BodyPosition")
-            hoverPosition.Name="SmoothFarmHover"; hoverPosition.MaxForce=Vector3.new(1e6,1e6,1e6)
-            hoverPosition.P=12000; hoverPosition.D=1200; hoverPosition.Position=root.Position; hoverPosition.Parent=root
-            hoverGyro=Instance.new("BodyGyro")
-            hoverGyro.Name="SmoothFarmFacing"; hoverGyro.MaxTorque=Vector3.new(1e6,1e6,1e6)
-            hoverGyro.P=9000; hoverGyro.D=600; hoverGyro.Parent=root
-        end
-        local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
-        local desired=center+Vector3.new(0,height,0)
-        local delta=desired-root.Position
-        local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,30,180)
-        local step=math.min(delta.Magnitude,speed*math.min(dt,.1))
-        hoverPosition.Position=delta.Magnitude>.01 and root.Position+delta.Unit*step or desired
-        local look=Vector3.new(center.X,root.Position.Y,center.Z)
-        if (look-root.Position).Magnitude>.1 then hoverGyro.CFrame=CFrame.lookAt(root.Position,look) end
-        return (root.Position-desired).Magnitude<=10
-    end
-    local function blade(napes)
-        local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then return false,"POST remote missing" end
-        local tool=LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool")
-        local started=false
-        local ok,err=pcall(function()
-            -- Tool activation runs its own input-independent handler if this
-            -- game's weapon is a Tool. No screen/mouse/keyboard input is sent.
-            if tool and tool.Enabled then tool:Activate() end
-            remote:FireServer("Attacks","Slash",true); started=true
-            task.wait(.12)
-            local emitted=0
-            for _,nape in ipairs(napes) do
-                if not Alive() or not (Cfg.AutoFarm or Cfg.AutoFarmSmart) then break end
-                if nape.Parent and nape.Name=="Nape" then
-                    remote:FireServer("Hitboxes","Register",nape,143+math.random()*10,.26+math.random()*.25)
-                    emitted=emitted+1
-                    if emitted%8==0 then task.wait(.1) end
+    local function collect()
+        local folder=workspace:FindFirstChild("Titans")
+        local list,seen={},{}
+        for _,t in ipairs(folder and folder:GetDescendants() or {}) do
+            if t:IsA("Model") and TitanAlive(t) then
+                local n=NapeOf(t)
+                if n and not seen[n] then
+                    seen[n]=true
+                    local ok,err=pcall(enlarge,n)
+                    if not ok then Farm.LastNapeError=tostring(err) end
+                    list[#list+1]={model=t,part=n}
                 end
             end
+        end
+        return list
+    end
+
+    local slashButton,scanButtonAt=nil,0
+    local function slashVisible(btn)
+        if not btn or not btn.Parent or not btn:IsA("GuiButton") or not btn.Active then return false end
+        local node=btn
+        while node and node~=PlayerGui do
+            if node:IsA("GuiObject") and not node.Visible then return false end
+            if node:IsA("ScreenGui") and not node.Enabled then return false end
+            node=node.Parent
+        end
+        return node==PlayerGui and btn.AbsoluteSize.X>0 and btn.AbsoluteSize.Y>0
+    end
+    local function slashName(value)
+        return tostring(value):lower():gsub("<[^>]*>",""):match("^%s*(.-)%s*$")=="slash"
+    end
+    local function findSlash()
+        if slashVisible(slashButton) then return slashButton end
+        slashButton=nil
+        if os.clock()<scanButtonAt then return nil end
+        scanButtonAt=os.clock()+1
+        for _,obj in ipairs(PlayerGui:GetDescendants()) do
+            if obj:IsA("GuiButton") and slashVisible(obj) then
+                local match=slashName(obj.Name) or (obj:IsA("TextButton") and slashName(obj.Text))
+                if not match then
+                    for _,label in ipairs(obj:GetDescendants()) do
+                        if label:IsA("TextLabel") and slashName(label.Text) then match=true; break end
+                    end
+                end
+                if match then slashButton=obj; return obj end
+            end
+        end
+    end
+    local function clickSlash()
+        local btn=findSlash()
+        if not btn then return false,"Visible Slash button not found" end
+        -- Fire one click signal, not two events that could double-trigger.
+        if type(firesignal)=="function" then
+            local ok,err=pcall(firesignal,btn.MouseButton1Click)
+            return ok,ok and "Slash click signal sent" or tostring(err)
+        end
+        local screen=btn:FindFirstAncestorOfClass("ScreenGui")
+        local inset=(screen and screen.IgnoreGuiInset) and Vector2.zero or GuiService:GetGuiInset()
+        local pos=btn.AbsolutePosition+btn.AbsoluteSize/2+inset
+        for _,obj in ipairs(PlayerGui:GetGuiObjectsAtPosition(pos.X,pos.Y)) do
+            if obj==btn or obj:IsDescendantOf(btn) then break end
+            if obj:IsA("GuiButton") then return false,"Slash covered by another button" end
+        end
+        local ok,err=pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,true,game,0)
+            task.wait(.06)
         end)
-        if tool then pcall(function() tool:Deactivate() end) end
-        local ended,endErr=true,nil
-        if started then ended,endErr=pcall(function() remote:FireServer("Attacks","Slash",false) end) end
-        if not ok or not ended then return false,tostring(err or endErr) end
-        return true,"Blade sequence sent; damage unconfirmed"
+        local released,releaseErr=pcall(function() VirtualInputManager:SendMouseButtonEvent(pos.X,pos.Y,0,false,game,0) end)
+        return ok and released,(ok and released) and "Slash button clicked" or tostring(err or releaseErr)
     end
     task.spawn(function()
-        local targets,scanAt,lastAttack,lastError={},0,0,0
-        local target=nil
-        local previous=os.clock()
+        local targets,scanAt,lastError={},0,0
         while Alive() do
-            task.wait(.05)
-            local now=os.clock(); local dt=now-previous; previous=now
+            task.wait(.65)
             local ok,err=pcall(function()
-                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then restore(); centerAnchor=nil; centerCharacter=nil; Farm.InputStatus="Off"; return end
-                local root=MyRoot()
-                if not Farm.CanUseHere() or not root then stopHover(); Farm.InputStatus="Waiting for playable character"; return end
-                if Farm.Refilling or Farm.FailSafeActive or Farm.NpcBusy or (Farm.PauseUntil and Farm.PauseUntil>now) then
-                    stopHover(); Farm.InputStatus="Paused for existing refill/safety/NPC task"; return
+                if not (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) then restoreNapes(); Farm.InputStatus="Off"; return end
+                if not Farm.CanUseHere() or not MyRoot() then Farm.InputStatus="Waiting for playable character"; return end
+                if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then Farm.InputStatus="Paused for refill/safety"; return end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.5 end
+                local napes={}
+                for _,item in ipairs(targets) do
+                    if item.part.Parent and TitanAlive(item.model) then napes[#napes+1]=item.part; B.Target=item.model end
                 end
-                if now>=scanAt then
-                    targets={}; scanAt=now+.5
-                    local folder=workspace:FindFirstChild("Titans")
-                    for _,t in ipairs(folder and folder:GetChildren() or {}) do
-                        if t:IsA("Model") and TitanAlive(t) then
-                            local n=NapeOf(t)
-                            if n then expand(n); targets[#targets+1]={model=t,nape=n} end
+                if #napes==0 then Farm.InputStatus="Waiting for napes"; return end
+                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
+                if thunder then
+                    local sent=Spear(napes)
+                    Farm.InputStatus=sent and "Spear fired; all-nape explosion requests queued" or "Spear waiting for cooldown/ammo/server"
+                else
+                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
+                    local sent,message=clickSlash()
+                    Farm.InputStatus=message
+                    if sent then
+                        task.wait(.1)
+                        local remote=Post()
+                        if remote then
+                            for i,nape in ipairs(napes) do
+                                if not Alive() or not (Cfg.AutoFarm or Cfg.AutoFarmSmart) then break end
+                                if nape.Parent then
+                                    remote:FireServer("Hitboxes","Register",nape,143+math.random()*10,.26+math.random()*.25)
+                                    if i%8==0 then task.wait(.1) end
+                                end
+                            end
                         end
                     end
                 end
-                local napes={}
-                local total=Vector3.zero
-                for _,item in ipairs(targets) do
-                    if item.nape.Parent and TitanAlive(item.model) then
-                        napes[#napes+1]=item.nape; total=total+item.nape.Position
-                    end
-                end
-                if #napes==0 then stopHover(); centerAnchor=nil; Farm.InputStatus="Waiting for nape targets"; return end
-                if not centerAnchor or centerCharacter~=LocalPlayer.Character then
-                    centerAnchor=total/#napes; centerCharacter=LocalPlayer.Character
-                end
-                B.Target=targets[1] and targets[1].model
-                hover(root,centerAnchor,dt)
-                B.Status="Center hover / all-nape requests"
-                local thunder=Cfg.AutoFarmThunder or (Cfg.AutoFarmSmart and Cfg.UseThunderSpears)
-                local cooldown=thunder and 2 or .65
-                if now-lastAttack<cooldown then return end
-                lastAttack=now
-                if thunder then
-                    local sent=Spear(napes)
-                    Farm.InputStatus=sent and "Spear requests queued for all detected napes; damage unconfirmed" or "Spear not confirmed; check ammo/equipment"
-                else
-                    if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blades"; return end
-                    local sent,message=blade(napes); Farm.InputStatus=message
-                end
+                B.Status=Farm.InputStatus
             end)
             if not ok then
-                stopHover(); Farm.InputStatus="Farm error: "..tostring(err)
-                if now-lastError>=5 then warn(Farm.InputStatus); lastError=now end
+                Farm.InputStatus="Farm error: "..tostring(err)
+                if os.clock()-lastError>=5 then warn(Farm.InputStatus); lastError=os.clock() end
             end
         end
-        restore()
+        restoreNapes()
     end)
 
     Farm.ClearWaveStatus = "Off"
@@ -5000,142 +4999,22 @@ do
     end
     -- คืน true ถ้าเติมสำเร็จ
     local function DoRefill()
-        local ok0, post = pcall(function()
-            return game:GetService("ReplicatedStorage").Assets.Remotes:WaitForChild("POST", 5)
-        end)
-        if not ok0 or not post then Status = "POST remote not found" return false end
-
-        local function PressPrompt(prompt)
-            if type(fireproximityprompt) == "function" and pcall(fireproximityprompt, prompt) then return true end
-            return pcall(function()
-                prompt:InputHoldBegin()
-                task.wait((prompt.HoldDuration or 0) + 0.15)
-                prompt:InputHoldEnd()
-            end)
-        end
-
-        local function PressRKey(prompt)
-            local hold = (prompt and prompt.HoldDuration or 0) + 0.2
-            local VIM = game:GetService("VirtualInputManager")
-            pcall(function() VIM:SendKeyEvent(true, Enum.KeyCode.R, false, game) end)
-            task.wait(hold)
-            pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.R, false, game) end)
-        end
-
-        local function PromptOf(station)
-            local p = station:FindFirstChildWhichIsA("ProximityPrompt", true)
-            if not p and station.Parent then
-                p = station.Parent:FindFirstChildWhichIsA("ProximityPrompt", true)
-            end
-            return p
-        end
-
-        local function PromptPos(prompt, station)
-            local par = prompt and prompt.Parent
-            if par and par:IsA("BasePart") then return par.Position end
-            if par and par:IsA("Attachment") then return par.WorldPosition end
-            return PosOf(station)
-        end
-
-        local REFILL_SPEED = 800
-        local function TweenToPos(root, targetPos)
-            local dist = (root.Position - targetPos).Magnitude
-            local t = math.clamp(dist / REFILL_SPEED, 0.1, 6)
-            local ok, tw = pcall(function()
-                return game:GetService("TweenService"):Create(
-                    root,
-                    TweenInfo.new(t, Enum.EasingStyle.Linear),
-                    { CFrame = CFrame.new(targetPos) }
-                )
-            end)
-            if not ok or not tw then
-                pcall(function() root.CFrame = CFrame.new(targetPos) end)
-                return
-            end
-            local vel = game:GetService("RunService").Heartbeat:Connect(function()
-                pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
-            end)
-            tw:Play()
-            local t0 = os.clock()
-            while os.clock() - t0 < t + 0.3 and tw.PlaybackState == Enum.PlaybackState.Playing and Alive() do
-                task.wait()
-            end
-            pcall(function() tw:Cancel() end)
-            vel:Disconnect()
-        end
-
-        local isMobile = game:GetService("UserInputService").TouchEnabled
-        local refillsBefore = RefillsLeft()
-        -- เติมสำเร็จ = ไม่ต้องเติมแล้ว หรือจำนวน Refills ของผู้เล่นลดลง (เซิร์ฟเวอร์รับคำสั่งแล้ว แม้การตรวจจับดาบยังไม่อัปเดต)
-        local function Done()
-            if not (NeedBlade() or NeedThunder()) then return true end
-            local now = RefillsLeft()
-            return refillsBefore ~= nil and now ~= nil and now < refillsBefore
-        end
-        local function WaitDone(sec)
-            local t0 = os.clock()
-            while os.clock() - t0 < sec do
-                if Done() then return true end
-                task.wait(0.2)
-            end
-            return Done()
-        end
-
-        for attempt = 1, TRIES do
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if not (root and hum and hum.Health > 0) then break end
-
-            local station = NearestStation(root)
-            if not station then Status = "Refill station not found" break end
-
-            Log(string.format("reason | spears=%s stuck=%s bladeNeed=%s refills=%s mobile=%s station=%s",
-                tostring(Farm.SpearsLeft and Farm.SpearsLeft()), tostring(Farm.SpearStuck and Farm.SpearStuck()),
-                tostring(NeedBladeRaw()), tostring(RefillsLeft()), tostring(isMobile), station:GetFullName()))
-
-            -- ขั้น 1: ส่ง Remote ตรงๆ โดยไม่ขยับตัว (ใช้ทุกแพลตฟอร์ม รวมมือถือ)
-            Status = ("Refilling (%d/%d) remote"):format(attempt, TRIES)
-            pcall(function() post:FireServer("Attacks", "Reload", station) end)
-            if WaitDone(2.5) then
-                Status = "Refilled"
-                Log("ok | remote")
-                Farm.Refilling = false
-                return true
-            end
-
-            -- ขั้น 2: ไม่สำเร็จ -> ไปที่สถานี กดปุ่ม/พรอมต์จริง แล้วยิง Remote ซ้ำ จากนั้นกลับที่เดิม
-            Status = ("Refilling (%d/%d) at station"):format(attempt, TRIES)
-            local prompt = PromptOf(station)
-            local back = root.CFrame
-            local pos = PromptPos(prompt, station)
-            Farm.Refilling = true
-            if pos then
-                TweenToPos(root, pos + Vector3.new(0, 3, 0))
-                task.wait(0.3)
-            end
-            if prompt then
-                PressPrompt(prompt)
-            else
-                PressRKey(nil)
-            end
-            task.wait(0.4)
-            pcall(function() post:FireServer("Attacks", "Reload", station) end)
-            local done = WaitDone(CHECK_WAIT)
-            local r = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if r then TweenToPos(r, back.Position) end
-            Farm.Refilling = false
-            if done then
-                Status = "Refilled"
-                Log("ok | at station | prompt=" .. tostring(prompt ~= nil))
-                return true
-            end
-            Status = "Refill failed, retrying"
-            Log(("failed attempt %d | prompt=%s refills=%s need=%s"):format(attempt, tostring(prompt ~= nil), tostring(RefillsLeft()), tostring(NeedBlade() or NeedThunder())))
-        end
-
-        Farm.Refilling = false
-        return false
+        local root=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not root then Status="Waiting for character"; return false end
+        local station=NearestStation(root)
+        if not station then Status="Refill station not replicated"; return false end
+        local post
+        pcall(function() post=ReplicatedStorage.Assets.Remotes:FindFirstChild("POST") end)
+        if not post then Status="POST remote missing"; return false end
+        Farm.Refilling=true
+        local ok,err=pcall(function() post:FireServer("Attacks","Reload",station) end)
+        if not ok then Farm.Refilling=false; Status="Refill error: "..tostring(err); return false end
+        local untilAt=os.clock()+4
+        while Alive() and os.clock()<untilAt and (NeedBlade() or NeedThunder()) do task.wait(.2) end
+        local success=not (NeedBlade() or NeedThunder())
+        Farm.Refilling=false
+        Status=success and "Refill confirmed" or "Remote refill not confirmed; no movement attempted"
+        return success
     end
     local WaveStatus = "Off"
     Farm.WaveRefillStatus = function() return WaveStatus end
@@ -5207,65 +5086,25 @@ do
         pcall(function() VIM:SendKeyEvent(false, Enum.KeyCode.R, false, game) end)
     end
     local function DoWaveRefill()
-        local folder = WaveFolder()
-        if not folder then WaveStatus = "Not in wave mode" return false end
-        local list = Collect(folder)
-        local post = nil
-        pcall(function() post = game:GetService("ReplicatedStorage").Assets.Remotes:FindFirstChild("POST") end)
-        local success = false
-        for attempt = 1, 3 do
-            local char = LocalPlayer.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local root = char and char:FindFirstChild("HumanoidRootPart")
-            if not (root and hum and hum.Health > 0) then break end
-            local station, bestD = nil, math.huge
-            for _, st in ipairs(list) do
-                local pos = st.Parent and PosOf(st)
-                if pos then
-                    local d = (pos - root.Position).Magnitude
-                    if d < bestD then station, bestD = st, d end
-                end
-            end
-            if not station then WaveStatus = "Wave refill station not found" break end
-            local prompt = PromptOf(station)
-            local pos = PromptPos(prompt, station)
-            if not pos then WaveStatus = "Refill position not found" break end
-            WaveStatus = ("Going to refill (%d/3)"):format(attempt)
-            local back = root.CFrame
-            Farm.Refilling = true
-            TweenTo(root, CFrame.new(pos + Vector3.new(0, 3, 0)))
-            task.wait(0.2)
-            WaveStatus = ("Refilling (%d/3)"):format(attempt)
-            local before = PromptCount(prompt)
-            Log(string.format("wave refill #%d via %s | prompt=%s Refills=%s | %s", attempt,
-                attempt == 1 and "prompt" or (attempt == 2 and "key R" or "remote"),
-                tostring(prompt ~= nil), tostring(LocalPlayer:GetAttribute("Refills")), station:GetFullName()))
-            if attempt == 1 then
-                if prompt then PressPrompt(prompt) else PressR(nil) end
-            elseif attempt == 2 then
-                PressR(prompt)
-            elseif post then
-                pcall(function() post:FireServer("Attacks", "Reload", station) end)
-            end
-            local t1 = os.clock()
-            while os.clock() - t1 < 5 and WaveNeed() do task.wait(0.2) end
-            local still = WaveNeed()
-            local after = PromptCount(prompt)
-            if still and before ~= nil and after ~= nil and after < before then
-                task.wait(2)
-                still = WaveNeed()
-            end
-            local r = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if r then TweenTo(r, back) end
-            Farm.Refilling = false
-            if not still then
-                WaveStatus = "Refilled"
-                success = true
-                break
-            end
-            WaveStatus = "Refill failed, retrying"
+        local folder=WaveFolder()
+        local root=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not folder or not root then WaveStatus="Waiting for wave character"; return false end
+        local station,distance=nil,math.huge
+        for _,st in ipairs(Collect(folder)) do
+            local pos=st.Parent and PosOf(st)
+            if pos then local d=(pos-root.Position).Magnitude; if d<distance then station,distance=st,d end end
         end
-        Farm.Refilling = false
+        local post
+        pcall(function() post=ReplicatedStorage.Assets.Remotes:FindFirstChild("POST") end)
+        if not station or not post then WaveStatus="Refill station/remote unavailable"; return false end
+        Farm.Refilling=true
+        local ok,err=pcall(function() post:FireServer("Attacks","Reload",station) end)
+        if not ok then Farm.Refilling=false; WaveStatus="Refill error: "..tostring(err); return false end
+        local untilAt=os.clock()+4
+        while Alive() and os.clock()<untilAt and WaveNeed() do task.wait(.2) end
+        local success=not WaveNeed()
+        Farm.Refilling=false
+        WaveStatus=success and "Refill confirmed" or "Remote refill not confirmed; no movement attempted"
         return success
     end
     task.spawn(function()
