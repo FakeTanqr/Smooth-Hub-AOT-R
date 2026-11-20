@@ -4009,6 +4009,11 @@ do
         return false
     end
         -- Manual blade attacks only. No synthetic input or Slash start/end remotes.
+    local function Slash(parts)
+        -- Only manual input is allowed to start blade hit registration.
+        return false
+    end
+    do -- isolate manual-Nape listeners from the farm function local register scope
     local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false}
     local manualUIS=game:GetService("UserInputService")
     local function CanonicalManualNape(part)
@@ -4080,11 +4085,6 @@ do
         task.delay(phase=="begin" and .08 or .02,function()
             if Alive() then ManualNapeSweep() end
         end)
-    end
-    local function Slash(parts)
-        -- Original automatic workers may still call this helper. They must
-        -- not initiate blade attacks or submit hits without manual input.
-        return false
     end
     do
         local function connect(signal,callback)
@@ -4162,6 +4162,8 @@ do
     end
 
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
+    end
+
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
         if n <= 0 or n >= 200 then return math.huge end
