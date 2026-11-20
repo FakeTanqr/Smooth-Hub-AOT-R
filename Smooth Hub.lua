@@ -4223,65 +4223,61 @@ local function ResolveMapCenter(root)
         Farm.CenterHoverStatus=centerState.status
         return centerState.anchor
     end
+    -- Independent center-hover movement owner. Does not depend on B.Target or Running().
     task.spawn(function()
-        local lastPick = 0
-        local orbitAngle = 0
+        local previousCharacter=nil
+        local startAt=0
+        local lastStatus=""
         while Alive() do
-            local dt = RunService.Heartbeat:Wait()
-            orbitAngle = (orbitAngle + ORBIT_SPEED * dt) % (math.pi * 2)
-            local root, char = MyRoot()
-            if char ~= lastChar then
-                lastChar = char
-                Farm.CharSpawnAt = os.clock()
-                readyAt = os.clock() + (Cfg.StartDelay or 0)
+            local dt=RunService.Heartbeat:Wait()
+            local root,char=MyRoot()
+            if char~=previousCharacter then
+                previousCharacter=char
+                centerState.anchor=nil
+                centerState.character=nil
+                startAt=os.clock()+math.max(0,tonumber(Cfg.StartDelay) or 0)
             end
-            if Cfg.AutoFarm and Running() and Farm.BladesBusy and Farm.BladesBusy() then
-                B.Status = "Reloading"
-                if root then pcall(function() root.AssemblyLinearVelocity = Vector3.zero end) end
-            elseif not Running() then
-                B.Target = nil
-                if Cfg.AutoFarm or Cfg.AutoFarmThunder then B.Status = "Paused" else B.Status = "Idle" end
+            local enabled=(Cfg.AutoFarm or Cfg.AutoFarmThunder) and Farm.CanUseHere()
+            local busy=Farm.NpcBusy or Farm.LootBusy or Farm.Refilling or Farm.FailSafeActive
+                or (Farm.PauseUntil and Farm.PauseUntil>os.clock())
+                or (Farm.MovePauseUntil and Farm.MovePauseUntil>os.clock())
+                or (Cfg.AutoClearWave and SH.PlayOn())
+            local status
+            if not enabled then
+                status="Off"
             elseif not root then
-                B.Target = nil
-                B.Status = "Waiting for character"
-            elseif os.clock() < readyAt then
-                B.Status = "Start delay"
-            elseif Farm.BossBlock() then
-                B.Target = nil
-                B.Status = "Waiting for boss"
-                pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                status="Waiting for character"
+            elseif busy then
+                status="Yielded to existing movement/refill"
+            elseif os.clock()<startAt then
+                status="Start delay"
+            elseif Cfg.WaitForBoss and Farm.BossBlock() then
+                status="Waiting for boss"
             else
-                if B.Target and not TitanAlive(B.Target) then
-                    B.Target = nil
-                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
-                end
-                if not B.Target and os.clock() - lastPick > 0.4 then
-                    lastPick = os.clock()
-                    B.Target = PickTitan(root)
-                end
-                local nape = B.Target and NapeOf(B.Target)
-                if nape then
-                    local anchor=ResolveMapCenter(root)
-                    local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
-                    local goal=anchor+Vector3.new(0,height,0)
-                    local diff = goal - root.Position
-                    local dist = diff.Magnitude
-                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
-                    if dist > 1 then
-                        local step = math.min((Cfg.FlySpeed or 600) * dt, dist)
-                        local newPos = root.Position + diff.Unit * step
-                        root.CFrame = CFrame.new(newPos)
-                    end
-                    B.Status = (dist <= ARRIVE_DIST) and "Attacking" or "Flying to titan"
+                local center=ResolveMapCenter(root)
+                local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
+                local destination=center+Vector3.new(0,height,0)
+                local difference=destination-root.Position
+                local distance=difference.Magnitude
+                if distance>1 then
+                    local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,1,600)
+                    local step=math.min(distance,speed*math.min(dt,.1))
+                    local ok,err=pcall(function()
+                        root.AssemblyLinearVelocity=Vector3.zero
+                        root.CFrame=CFrame.new(root.Position+difference.Unit*step)*root.CFrame.Rotation
+                    end)
+                    status=ok and "Flying to center" or ("Center movement error: "..tostring(err))
                 else
-                    B.Target = nil
-                    B.Status = "Searching for titans"
-                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                    pcall(function() root.AssemblyLinearVelocity=Vector3.zero end)
+                    status="Hovering at center"
                 end
+            end
+            if status~=lastStatus then
+                lastStatus=status
+                Farm.CenterHoverStatus=status
             end
         end
     end)
-    -- 💥 Burst Mode (ทำงานเมื่อเปิด Damage Multiplier): ยิงเป็นชุดละ BURST_SIZE ครั้งใส่ไททัน "เฉพาะตอนบินถึงตัวแล้ว"
     -- แล้วพัก BURST_GAP วินาทีค่อยยิงชุดถัดไป (แทนการทยอยยิงทีละ 1 ใส่ไททัน 9 ตัวตลอดเวลา) | BURST_TARGETS = จำนวนไททันต่อชุด
     local BURST_MODE = false -- Blades: กลับไปแบบเดิม (ฟันหลายตัวพร้อมกันต่อรอบ) | Thunder Spears ยิงเป็นชุดแยกด้านล่าง (SPEAR_BURST)
     local BURST_SIZE = 10
