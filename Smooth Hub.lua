@@ -3544,7 +3544,7 @@ do
         local label=row:Right():Label({Text="Off"})
         task.spawn(function()
             while Alive() do
-                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..tostring(Farm.CenterHoverStatus or "Center not selected").."\n"..tostring(Farm.RemoteRefillStatus or "Refill idle").."\n"..tostring(SH.AutoexecStatus or "Autoexecute initializing").."\n"..SH.SlashSaveStatus end)
+                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..tostring(Farm.CenterHoverStatus or "Center not selected").."\n"..tostring(Farm.RemoteRefillStatus or "Refill idle").."\n"..tostring(SH.AutoexecStatus or "Autoexecute initializing").."\n"..SH.SlashSaveStatus.."\n"..tostring(Farm.ManualSlashStatus or "Manual Slash: awaiting input") end)
                 task.wait(.5)
             end
         end)
@@ -4030,7 +4030,7 @@ do
         return false
     end
     do -- manual-Nape listeners have an isolated local scope
-    local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false}
+    local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false,held=false,clicks=0}
     local manualUIS=game:GetService("UserInputService")
     local function CanonicalManualNape(part)
         if typeof(part)~="Instance" or not part:IsA("BasePart") or part.Name~="Nape" or not part.Parent then return false end
@@ -4056,8 +4056,8 @@ do
         return result
     end
     local function ManualBladeReady()
-        if not Alive() or not MyRoot() then return false end
-        if manualUIS:GetFocusedTextBox() then return false end
+        if not Alive() or not MyRoot() then Farm.ManualSlashStatus="Manual Slash: character unavailable"; return false end
+        if manualUIS:GetFocusedTextBox() then Farm.ManualSlashStatus="Manual Slash: text box focused"; return false end
         return true
     end
     local function ManualNapeSweep()
@@ -4065,11 +4065,12 @@ do
         if os.clock()-manualNapes.lastSweep<.12 then return false end
         local remote=Post()
         if not remote or not remote:IsA("RemoteEvent") then
-            Farm.LastAttackIssue="Manual Slash: POST remote missing"; return false
+            Farm.LastAttackIssue="Manual Slash: POST remote missing"; Farm.ManualSlashStatus=Farm.LastAttackIssue; return false
         end
         local parts=AllManualNapes()
         if #parts==0 then
             Farm.LastAttackIssue="Manual Slash: no replicated living napes found"
+            Farm.ManualSlashStatus=Farm.LastAttackIssue
             return false
         end
         manualNapes.busy=true
@@ -4079,7 +4080,7 @@ do
             -- Identical transaction signature and argument ordering to the
             -- attached working Smooth Hub Slash implementation.
             if NetPending()>NET_QUEUE_MAX-3 then
-                Farm.LastAttackIssue="Manual Slash: attack queue full"; return
+                Farm.LastAttackIssue="Manual Slash: attack queue full"; Farm.ManualSlashStatus=Farm.LastAttackIssue; return
             end
             NetPush(remote,"Attacks","Slash",true)
             local repeats=Cfg.DamageMultiplier and 10 or 1
@@ -4103,11 +4104,13 @@ do
         end
         B.Hits=B.Hits+sent
         if sent>0 then Farm.LastAttackIssue=nil end
-        Farm.ManualSlashStatus="Manual Slash: "..sent.." canonical nape requests queued; server damage not confirmed"
+        Farm.ManualSlashStatus="Manual Slash: "..sent.." nape requests queued | clicks "..manualNapes.clicks.." | server damage unconfirmed"
         return sent>0
     end
     local function ManualSlashPhase(phase)
         if not ManualBladeReady() then return end
+        manualNapes.clicks=manualNapes.clicks+1
+        Farm.ManualSlashStatus="Manual Slash: "..phase.." detected ("..manualNapes.clicks.."), scanning..."
         local key=phase=="begin" and "lastBegin" or "lastEnd"
         local now=os.clock()
         if now-manualNapes[key]<.08 then return end
@@ -4127,11 +4130,15 @@ do
         connect(workspace.DescendantRemoving,function(part) manualNapes.parts[part]=nil end)
         connect(manualUIS.InputBegan,function(input,processed)
             if input.UserInputType==Enum.UserInputType.MouseButton1 and not manualUIS:GetFocusedTextBox() then
+                manualNapes.held=true
                 ManualSlashPhase("begin")
             end
         end)
         connect(manualUIS.InputEnded,function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 and os.clock()-manualNapes.lastBegin<15 then ManualSlashPhase("end") end
+            if input.UserInputType==Enum.UserInputType.MouseButton1 then
+                manualNapes.held=false
+                if os.clock()-manualNapes.lastBegin<15 then ManualSlashPhase("end") end
+            end
         end)
         local function slashText(value)
             return tostring(value):lower():gsub("<[^>]*>",""):match("^%s*(.-)%s*$")=="slash"
