@@ -4058,39 +4058,52 @@ do
     local function ManualBladeReady()
         if not Alive() or not MyRoot() then return false end
         if manualUIS:GetFocusedTextBox() then return false end
-        if Cfg.UseThunderSpears or Cfg.AutoFarmThunder then return false end
         return true
     end
     local function ManualNapeSweep()
         if not ManualBladeReady() or manualNapes.busy then return false end
-        if os.clock()-manualNapes.lastSweep<.03 then return false end
+        if os.clock()-manualNapes.lastSweep<.12 then return false end
         local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="Manual slash: POST RemoteEvent missing"; return false end
+        if not remote or not remote:IsA("RemoteEvent") then
+            Farm.LastAttackIssue="Manual Slash: POST remote missing"; return false
+        end
         local parts=AllManualNapes()
-        if #parts==0 then Farm.LastAttackIssue="Manual slash: no loaded living canonical napes"; return false end
-        manualNapes.busy=true; manualNapes.lastSweep=os.clock()
+        if #parts==0 then
+            Farm.LastAttackIssue="Manual Slash: no replicated living napes found"
+            return false
+        end
+        manualNapes.busy=true
+        manualNapes.lastSweep=os.clock()
         local sent=0
         local ok,err=xpcall(function()
-            -- Match the attached working Smooth Hub attack protocol: Slash begin,
-            -- nape-only Register hits, Slash end. Only invoked by real manual input.
-            remote:FireServer("Attacks", "Slash", true)
+            -- Identical transaction signature and argument ordering to the
+            -- attached working Smooth Hub Slash implementation.
+            if NetPending()>NET_QUEUE_MAX-3 then
+                Farm.LastAttackIssue="Manual Slash: attack queue full"; return
+            end
+            NetPush(remote,"Attacks","Slash",true)
             local repeats=Cfg.DamageMultiplier and 10 or 1
             for _=1,repeats do
                 for _,part in ipairs(parts) do
                     if not Alive() then break end
                     if CanonicalManualNape(part) then
-                        remote:FireServer("Hitboxes", "Register", part, 143+math.random()*10, .26+math.random()*.25)
+                        if NetPending()>=NET_QUEUE_MAX-2 then break end
+                        NetPush(remote,"Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
                         sent=sent+1
                     end
                 end
             end
-            remote:FireServer("Attacks", "Slash", false)
+            NetPush(remote,"Attacks","Slash",false)
         end,function(e) return tostring(e) end)
         manualNapes.busy=false
-        if not ok then Farm.LastAttackIssue="Manual nape registration error: "..tostring(err); warn(Farm.LastAttackIssue); return false end
-        B.Hits=B.Hits+sent -- submitted requests, not confirmed damage
-        Farm.LastAttackIssue=nil
-        Farm.ManualSlashStatus="Manual slash: "..sent.." nape-only requests; damage/crit unconfirmed"
+        if not ok then
+            Farm.LastAttackIssue="Manual Slash queue error: "..tostring(err)
+            warn(Farm.LastAttackIssue)
+            return false
+        end
+        B.Hits=B.Hits+sent
+        if sent>0 then Farm.LastAttackIssue=nil end
+        Farm.ManualSlashStatus="Manual Slash: "..sent.." canonical nape requests queued; server damage not confirmed"
         return sent>0
     end
     local function ManualSlashPhase(phase)
@@ -4113,7 +4126,9 @@ do
         connect(workspace.DescendantAdded,TrackManualNape)
         connect(workspace.DescendantRemoving,function(part) manualNapes.parts[part]=nil end)
         connect(manualUIS.InputBegan,function(input,processed)
-            if not processed and input.UserInputType==Enum.UserInputType.MouseButton1 then ManualSlashPhase("begin") end
+            if input.UserInputType==Enum.UserInputType.MouseButton1 and not manualUIS:GetFocusedTextBox() then
+                ManualSlashPhase("begin")
+            end
         end)
         connect(manualUIS.InputEnded,function(input)
             if input.UserInputType==Enum.UserInputType.MouseButton1 and os.clock()-manualNapes.lastBegin<15 then ManualSlashPhase("end") end
