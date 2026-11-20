@@ -817,21 +817,6 @@ local okLib, Cascade = pcall(function()
     return lib
 end)
 if not okLib or type(Cascade) ~= "table" then
-    local detail=tostring(Cascade)
-    warn("[Smooth Hub] UI load failure: "..detail)
-    pcall(function()
-        local screen=Instance.new("ScreenGui")
-        screen.Name="SmoothHubStartupError"; screen.ResetOnSpawn=false; screen.DisplayOrder=9999
-        screen.Parent=PlayerGui
-        local label=Instance.new("TextLabel")
-        label.Name="ErrorDetails"; label.AnchorPoint=Vector2.new(.5,.5)
-        label.Position=UDim2.fromScale(.5,.5); label.Size=UDim2.new(.85,0,0,170)
-        label.BackgroundColor3=Color3.fromRGB(25,20,25)
-        label.TextColor3=Color3.fromRGB(255,225,225)
-        label.TextWrapped=true; label.TextSize=15; label.Font=Enum.Font.Gotham
-        label.Text="Smooth Hub UI failed to load.\n"..detail.."\nCheck the executor console for details."
-        label.Parent=screen
-    end)
     SH.say("Could not load the interface. Check your internet connection.")
     SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
     pcall(function()
@@ -3544,7 +3529,7 @@ do
         local label=row:Right():Label({Text="Off"})
         task.spawn(function()
             while Alive() do
-                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..tostring(Farm.CenterHoverStatus or "Center not selected").."\n"..tostring(Farm.RemoteRefillStatus or "Refill idle").."\n"..tostring(SH.AutoexecStatus or "Autoexecute initializing").."\n"..SH.SlashSaveStatus.."\n"..tostring(Farm.ManualSlashStatus or "Manual Slash: awaiting input") end)
+                pcall(function() label.Text=tostring(Farm.InputStatus or "Starting").."\n"..tostring(Farm.CenterHoverStatus or "Center not selected").."\n"..tostring(Farm.RemoteRefillStatus or "Refill idle").."\n"..tostring(SH.AutoexecStatus or "Autoexecute initializing").."\n"..SH.SlashSaveStatus end)
                 task.wait(.5)
             end
         end)
@@ -4023,186 +4008,81 @@ do
         end
         return false
     end
-        -- Manual blade attacks only. No synthetic input or Slash start/end remotes.
-    local function Slash(parts)
-        -- Original automatic workers may still call this helper. They must
-        -- not initiate blade attacks or submit hits without manual input.
-        return false
-    end
-    do -- manual-Nape listeners have an isolated local scope
-    local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false,held=false,clicks=0}
-    local manualUIS=game:GetService("UserInputService")
-    local function CanonicalManualNape(part)
-        if typeof(part)~="Instance" or not part:IsA("BasePart") or part.Name~="Nape" or not part.Parent then return false end
-        local model=part.Parent
-        while model and model~=workspace do
-            if model:IsA("Model") and NapeOf(model)==part then
-                if Players:GetPlayerFromCharacter(model) then return false end
-                return TitanAlive(model)
-            end
-            model=model.Parent
-        end
-        return false
-    end
-    local function TrackManualNape(part)
-        if part:IsA("BasePart") and part.Name=="Nape" then manualNapes.parts[part]=true end
-    end
-    local function AllManualNapes()
-        local result={}
-        for part in pairs(manualNapes.parts) do
-            if not part.Parent or not part:IsDescendantOf(workspace) then manualNapes.parts[part]=nil
-            elseif CanonicalManualNape(part) then result[#result+1]=part end
-        end
-        return result
-    end
-    local function ManualBladeReady()
-        if not Alive() or not MyRoot() then Farm.ManualSlashStatus="Manual Slash: character unavailable"; return false end
-        if manualUIS:GetFocusedTextBox() then Farm.ManualSlashStatus="Manual Slash: text box focused"; return false end
-        return true
-    end
-    local function ManualNapeSweep()
-        if not ManualBladeReady() or manualNapes.busy then return false end
-        if os.clock()-manualNapes.lastSweep<.12 then return false end
+        local function Slash(parts)
         local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then
-            Farm.LastAttackIssue="Manual Slash: POST remote missing"; Farm.ManualSlashStatus=Farm.LastAttackIssue; return false
+        if not remote then Farm.LastAttackIssue="Slash POST remote unavailable"; return false end
+        -- Preserve the original working Smooth Hub packet protocol.
+        local candidates=ResolvedTargets()
+        local napes={}
+        for _,part in ipairs(candidates) do
+            if CanonicalNape(part) then napes[#napes+1]=part end
         end
-        local parts=AllManualNapes()
-        if #parts==0 then
-            Farm.LastAttackIssue="Manual Slash: no replicated living napes found"
-            Farm.ManualSlashStatus=Farm.LastAttackIssue
-            return false
-        end
-        manualNapes.busy=true
-        manualNapes.lastSweep=os.clock()
+        if #napes==0 then Farm.LastAttackIssue="No replicated living napes"; return false end
         local sent=0
-        local ok,err=xpcall(function()
-            -- Identical transaction signature and argument ordering to the
-            -- attached working Smooth Hub Slash implementation.
-            if NetPending()>NET_QUEUE_MAX-3 then
-                Farm.LastAttackIssue="Manual Slash: attack queue full"; Farm.ManualSlashStatus=Farm.LastAttackIssue; return
+        local first=true
+        -- Bounded chunks keep a full transaction together in the existing queue.
+        -- No player-distance filter; the server may still reject distant hits.
+        for index=1,#napes,12 do
+            if not Alive() then break end
+            local chunk={}
+            for j=index,math.min(index+11,#napes) do chunk[#chunk+1]=napes[j] end
+            if NetPending()+#chunk+2>NET_QUEUE_MAX then
+                Farm.LastAttackIssue="Slash queue capacity reached"
+                break
             end
+            local reps=Reps(#chunk)
+            if reps<1 then break end
+            if first then first=false end
             NetPush(remote,"Attacks","Slash",true)
-            local repeats=Cfg.DamageMultiplier and 10 or 1
-            for _=1,repeats do
-                for _,part in ipairs(parts) do
-                    if not Alive() then break end
-                    if CanonicalManualNape(part) then
-                        if NetPending()>=NET_QUEUE_MAX-2 then break end
+            for r=1,reps do
+                for _,part in ipairs(chunk) do
+                    if CanonicalNape(part) then
                         NetPush(remote,"Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
                         sent=sent+1
                     end
                 end
             end
             NetPush(remote,"Attacks","Slash",false)
-        end,function(e) return tostring(e) end)
-        manualNapes.busy=false
-        if not ok then
-            Farm.LastAttackIssue="Manual Slash queue error: "..tostring(err)
-            warn(Farm.LastAttackIssue)
-            return false
         end
         B.Hits=B.Hits+sent
+        Farm.ManualSlashStatus="Manual Slash: "..sent.." nape requests queued; damage unconfirmed"
         if sent>0 then Farm.LastAttackIssue=nil end
-        Farm.ManualSlashStatus="Manual Slash: "..sent.." nape requests queued | clicks "..manualNapes.clicks.." | server damage unconfirmed"
         return sent>0
     end
-    local function ManualSlashPhase(phase)
-        if not ManualBladeReady() then return end
-        manualNapes.clicks=manualNapes.clicks+1
-        Farm.ManualSlashStatus="Manual Slash: "..phase.." detected ("..manualNapes.clicks.."), scanning..."
-        local key=phase=="begin" and "lastBegin" or "lastEnd"
-        local now=os.clock()
-        if now-manualNapes[key]<.08 then return end
-        manualNapes[key]=now
-        -- Observe real input; let the game's own handler start/finish the attack.
-        task.delay(phase=="begin" and .08 or .02,function()
-            if Alive() then ManualNapeSweep() end
-        end)
-    end
     do
-        local function connect(signal,callback)
-            local connection=signal:Connect(callback)
-            manualNapes.connections[#manualNapes.connections+1]=connection
-            return connection
+        local UIS=game:GetService("UserInputService")
+        local held=false
+        local nextSlash=0
+        local function manualAttack()
+            if not Alive() or UIS:GetFocusedTextBox() then return end
+            if os.clock()<nextSlash then return end
+            nextSlash=os.clock()+.4
+            task.defer(function()
+                if Alive() then
+                    local ok,err=pcall(Slash)
+                    if not ok then Farm.LastAttackIssue="Manual Slash error: "..tostring(err) end
+                end
+            end)
         end
-        connect(workspace.DescendantAdded,TrackManualNape)
-        connect(workspace.DescendantRemoving,function(part) manualNapes.parts[part]=nil end)
-        connect(manualUIS.InputBegan,function(input,processed)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 and not manualUIS:GetFocusedTextBox() then
-                manualNapes.held=true
-                ManualSlashPhase("begin")
-            end
-        end)
-        connect(manualUIS.InputEnded,function(input)
+        local begin=UIS.InputBegan:Connect(function(input)
             if input.UserInputType==Enum.UserInputType.MouseButton1 then
-                manualNapes.held=false
-                if os.clock()-manualNapes.lastBegin<15 then ManualSlashPhase("end") end
+                held=true
+                manualAttack()
             end
         end)
-        local function slashText(value)
-            return tostring(value):lower():gsub("<[^>]*>",""):match("^%s*(.-)%s*$")=="slash"
-        end
-        local function bindControls()
-            for button,connections in pairs(manualNapes.buttons) do
-                if not button.Parent then
-                    for _,connection in ipairs(connections) do connection:Disconnect() end
-                    manualNapes.buttons[button]=nil
-                end
-            end
-            local interface=PlayerGui:FindFirstChild("Interface")
-            for _,button in ipairs(interface and interface:GetDescendants() or {}) do
-                if button:IsA("GuiButton") and not manualNapes.buttons[button] then
-                    local matches=slashText(button.Name) or (button:IsA("TextButton") and slashText(button.Text))
-                    if not matches then
-                        for _,label in ipairs(button:GetDescendants()) do
-                            if label:IsA("TextLabel") and slashText(label.Text) then matches=true; break end
-                        end
-                    end
-                    if matches then
-                        local function pointer(input) return input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch end
-                        manualNapes.buttons[button]={
-                            button.InputBegan:Connect(function(input) if pointer(input) then ManualSlashPhase("begin") end end),
-                            button.InputEnded:Connect(function(input) if pointer(input) then ManualSlashPhase("end") end end),
-                        }
-                    end
-                end
-            end
-            for tool,connections in pairs(manualNapes.toolConnections) do
-                if not tool.Parent or tool.Parent~=LocalPlayer.Character then
-                    for _,connection in ipairs(connections) do connection:Disconnect() end
-                    manualNapes.toolConnections[tool]=nil
-                end
-            end
-            local character=LocalPlayer.Character
-            for _,tool in ipairs(character and character:GetChildren() or {}) do
-                if tool:IsA("Tool") and not manualNapes.toolConnections[tool] then
-                    manualNapes.toolConnections[tool]={
-                        tool.Activated:Connect(function() ManualSlashPhase("begin") end),
-                        tool.Deactivated:Connect(function() ManualSlashPhase("end") end),
-                    }
-                end
-            end
-        end
+        local ended=UIS.InputEnded:Connect(function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 then held=false end
+        end)
         task.spawn(function()
-            for i,part in ipairs(workspace:GetDescendants()) do
-                if not Alive() then break end
-                TrackManualNape(part)
-                if i%1000==0 then task.wait() end
-            end
             while Alive() do
-                local ok,err=pcall(bindControls)
-                if not ok then Farm.LastAttackIssue="Manual slash control binding: "..tostring(err) end
-                task.wait(1)
+                task.wait(.1)
+                if held then manualAttack() end
             end
-            for _,connection in ipairs(manualNapes.connections) do connection:Disconnect() end
-            for _,connections in pairs(manualNapes.buttons) do for _,connection in ipairs(connections) do connection:Disconnect() end end
-            for _,connections in pairs(manualNapes.toolConnections) do for _,connection in ipairs(connections) do connection:Disconnect() end end
+            begin:Disconnect();ended:Disconnect()
         end)
     end
 
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
-    end
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
         if n <= 0 or n >= 200 then return math.huge end
@@ -4376,7 +4256,9 @@ do
                 for _,part in ipairs(parts) do
                     if not Alive() then return end
                     if CanonicalNape(part) then
-                        remote:FireServer("Spears","S_Explode",part.Position)
+                        while Alive() and NetPending()>=NET_QUEUE_MAX-2 do task.wait(.02) end
+                        if not Alive() then return end
+                        NetPush(remote,"Spears","S_Explode",part.Position)
                     end
                 end
                 Farm.LastAttackIssue=nil
@@ -4650,7 +4532,7 @@ do
         end
         return #out > 0 and out or nil
     end
-    local function SlashBurst(parts) return false end
+        local function SlashBurst(parts) return false end
     local StatsSvc = game:GetService("Stats")
     local PING_BACKOFF = true   -- ตั้งเป็น false ถ้าไม่อยากให้ลดความถี่ตามปิง
     local PING_LIMIT = 350      -- ms: ปิงเกินนี้จะหน่วงช่วงโจมตีให้ห่างขึ้น
@@ -4776,7 +4658,7 @@ do
                     if Spear(targets) then Farm.InputStatus="One spear request in progress; all loaded living napes" end
                 else
                     if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
-                    Slash(targets)
+                    -- Blade hit registration is driven by the user's real M1.
                 end
                 if Farm.LastAttackIssue then Farm.InputStatus=Farm.LastAttackIssue end
             end,function(e) return tostring(e) end)
@@ -18503,41 +18385,6 @@ end
 SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")]================]
 local env=(type(getgenv)=="function" and getgenv()) or _G
 env.SmoothHubResolvedSource=source
-local function showStartupError(message)
-    warn("[Smooth Hub Resolved] "..tostring(message))
-    pcall(function()
-        local players=game:GetService("Players")
-        local player=players.LocalPlayer
-        if not player then return end
-        local playerGui=player:WaitForChild("PlayerGui",5)
-        if not playerGui then return end
-        local existing=playerGui:FindFirstChild("SmoothHubStartupError")
-        if existing then existing:Destroy() end
-        local gui=Instance.new("ScreenGui")
-        gui.Name="SmoothHubStartupError"; gui.ResetOnSpawn=false; gui.DisplayOrder=9999
-        gui.Parent=playerGui
-        local label=Instance.new("TextLabel")
-        label.Size=UDim2.new(.88,0,0,200)
-        label.AnchorPoint=Vector2.new(.5,.5)
-        label.Position=UDim2.fromScale(.5,.5)
-        label.BackgroundColor3=Color3.fromRGB(28,22,28)
-        label.TextColor3=Color3.fromRGB(255,225,225)
-        label.TextWrapped=true; label.TextSize=14; label.Font=Enum.Font.Gotham
-        label.Text="Smooth Hub startup failed.\n"..tostring(message).."\nCheck the executor console for details."
-        label.Parent=gui
-    end)
-end
-local okCompile,fn,compileError=pcall(loadstring,source,"Smooth Hub Resolved")
-if not okCompile or type(fn)~="function" then
-    showStartupError("Compile error: "..tostring(compileError or fn))
-    return
-end
-local okRun,runError=xpcall(fn,function(e)
-    local text=tostring(e)
-    if debug and type(debug.traceback)=="function" then
-        local ok,trace=pcall(debug.traceback,text,2)
-        if ok then return trace end
-    end
-    return text
-end)
-if not okRun then showStartupError("Runtime error: "..tostring(runError)) end
+local fn,err=loadstring(source,"Smooth Hub Resolved")
+if not fn then error("Smooth Hub Resolved compile error: "..tostring(err)) end
+return fn()
