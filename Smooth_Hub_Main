@@ -4008,108 +4008,159 @@ do
         end
         return false
     end
-    local function Slash(parts)
-        if resolvedFarm.slashBusy or os.clock()<resolvedFarm.nextSlash then return false end
-        parts=ResolvedBatch()
-        if #parts==0 then Farm.LastAttackIssue="No canonical living napes loaded"; return false end
+        -- Manual blade attacks only. No synthetic input or Slash start/end remotes.
+    local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false}
+    local manualUIS=game:GetService("UserInputService")
+    local function CanonicalManualNape(part)
+        if typeof(part)~="Instance" or not part:IsA("BasePart") or part.Name~="Nape" or not part.Parent then return false end
+        local model=part.Parent
+        while model and model~=workspace do
+            if model:IsA("Model") and NapeOf(model)==part then
+                if Players:GetPlayerFromCharacter(model) then return false end
+                return TitanAlive(model)
+            end
+            model=model.Parent
+        end
+        return false
+    end
+    local function TrackManualNape(part)
+        if part:IsA("BasePart") and part.Name=="Nape" then manualNapes.parts[part]=true end
+    end
+    local function AllManualNapes()
+        local result={}
+        for part in pairs(manualNapes.parts) do
+            if not part.Parent or not part:IsDescendantOf(workspace) then manualNapes.parts[part]=nil
+            elseif CanonicalManualNape(part) then result[#result+1]=part end
+        end
+        return result
+    end
+    local function ManualBladeReady()
+        if not Alive() or not Farm.CanUseHere() or not MyRoot() then return false end
+        if manualUIS:GetFocusedTextBox() then return false end
+        if Cfg.UseThunderSpears or Cfg.AutoFarmThunder then return false end
+        return true
+    end
+    local function ManualNapeSweep()
+        if not ManualBladeReady() or manualNapes.busy then return false end
+        if os.clock()-manualNapes.lastSweep<.03 then return false end
         local remote=Post()
-        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="POST RemoteEvent unavailable"; return false end
-        local button=ResolvedButton()
-        local char=LocalPlayer.Character
-        local tool=char and char:FindFirstChildOfClass("Tool")
-        if not button and not (tool and tool.Enabled) then
-            Farm.LastAttackIssue="No visible game Slash button or equipped Tool; no input guessed"
-            return false
-        end
-        local position=nil
-        if button then
-            local center=button.AbsolutePosition+button.AbsoluteSize/2
-            local inset=GuiService:GetGuiInset()
-            for _,candidate in ipairs({center,center+inset,center-inset}) do
-                local matched=false
-                for _,object in ipairs(PlayerGui:GetGuiObjectsAtPosition(candidate.X,candidate.Y)) do
-                    if object==button or object:IsDescendantOf(button) then matched=true; break end
-                    if object:IsA("GuiButton") then break end
-                end
-                if matched then position=candidate; break end
-            end
-            if not position then Farm.LastAttackIssue="Slash is covered; input skipped"; return false end
-        end
-        resolvedFarm.slashBusy=true; resolvedFarm.nextSlash=os.clock()+.65
-        local inputConnection=nil
-        local observed=false
-        local pressed=false
+        if not remote or not remote:IsA("RemoteEvent") then Farm.LastAttackIssue="Manual slash: POST RemoteEvent missing"; return false end
+        local parts=AllManualNapes()
+        if #parts==0 then Farm.LastAttackIssue="Manual slash: no loaded living canonical napes"; return false end
+        manualNapes.busy=true; manualNapes.lastSweep=os.clock()
         local sent=0
-        local health={}
-        for _,part in ipairs(parts) do
-            local model=part.Parent
-            while model and model~=workspace do
-                if model:IsA("Model") and NapeOf(model)==part then
-                    local humanoid=model:FindFirstChildOfClass("Humanoid")
-                    if humanoid then health[#health+1]={object=humanoid,before=humanoid.Health} end
-                    break
-                end
-                model=model.Parent
-            end
-        end
         local ok,err=xpcall(function()
-            if button then
-                inputConnection=button.InputBegan:Connect(function(input)
-                    if input.UserInputType==Enum.UserInputType.MouseButton1 then observed=true end
-                end)
-                pressed=true
-                VirtualInputManager:SendMouseButtonEvent(position.X,position.Y,0,true,game,0)
-            else tool:Activate(); pressed=true end
-            task.wait(.2)
-            if not Alive() then return end
-            -- Signature follows the supplied reference. The numeric argument
-            -- is NOT treated as a verified critical-chance control.
+            -- Preserve the attached working file's hit-registration signature.
+            -- Nape identity is not a verified critical-chance control.
             local repeats=Cfg.DamageMultiplier and 10 or 1
             for _=1,repeats do
                 for _,part in ipairs(parts) do
                     if not Alive() then return end
-                    if CanonicalNape(part) then
-                        remote:FireServer("Hitboxes","Register",part,math.random(625,850))
+                    if CanonicalManualNape(part) then
+                        remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
                         sent=sent+1
                     end
                 end
             end
         end,function(e) return tostring(e) end)
-        local released,releaseError=true,nil
-        if pressed then
-            released,releaseError=pcall(function()
-                if button then VirtualInputManager:SendMouseButtonEvent(position.X,position.Y,0,false,game,0)
-                elseif tool and tool.Parent then tool:Deactivate() end
-            end)
-        end
-        if ok and released and Alive() then
-            local phaseOk,phaseError=pcall(function()
-                task.wait(.04)
-                for _,part in ipairs(parts) do
-                    if CanonicalNape(part) then
-                        remote:FireServer("Hitboxes","Register",part,math.random(625,850))
-                        sent=sent+1
-                    end
-                end
-            end)
-            if not phaseOk then ok=false; err=phaseError end
-        end
-        if inputConnection then inputConnection:Disconnect() end
-        resolvedFarm.slashBusy=false
-        if not ok or not released then Farm.LastAttackIssue=tostring(err or releaseError); return false end
-        B.Hits=B.Hits+sent
+        manualNapes.busy=false
+        if not ok then Farm.LastAttackIssue="Manual nape registration error: "..tostring(err); warn(Farm.LastAttackIssue); return false end
+        B.Hits=B.Hits+sent -- submitted requests, not confirmed damage
         Farm.LastAttackIssue=nil
-        Farm.InputStatus=(button and (observed and "Slash input observed" or "Slash input not observed") or "Equipped Tool activated").."; "..sent.." nape requests; damage unconfirmed"
-        task.delay(.8,function()
-            if not Alive() then return end
-            local decreased=0
-            for _,sample in ipairs(health) do
-                if sample.object.Parent and sample.object.Health<sample.before then decreased=decreased+1 end
-            end
-            Farm.LastObservedDamage={Sampled=#health,Decreased=decreased}
-        end)
+        Farm.ManualSlashStatus="Manual slash: "..sent.." nape-only requests; damage/crit unconfirmed"
         return sent>0
     end
+    local function ManualSlashPhase(phase)
+        if not ManualBladeReady() then return end
+        local key=phase=="begin" and "lastBegin" or "lastEnd"
+        local now=os.clock()
+        if now-manualNapes[key]<.08 then return end
+        manualNapes[key]=now
+        -- Observe real input; let the game's own handler start/finish the attack.
+        task.delay(phase=="begin" and .08 or .02,function()
+            if Alive() then ManualNapeSweep() end
+        end)
+    end
+    local function Slash(parts)
+        -- Original automatic workers may still call this helper. They must
+        -- not initiate blade attacks or submit hits without manual input.
+        return false
+    end
+    do
+        local function connect(signal,callback)
+            local connection=signal:Connect(callback)
+            manualNapes.connections[#manualNapes.connections+1]=connection
+            return connection
+        end
+        connect(workspace.DescendantAdded,TrackManualNape)
+        connect(workspace.DescendantRemoving,function(part) manualNapes.parts[part]=nil end)
+        connect(manualUIS.InputBegan,function(input,processed)
+            if not processed and input.UserInputType==Enum.UserInputType.MouseButton1 then ManualSlashPhase("begin") end
+        end)
+        connect(manualUIS.InputEnded,function(input)
+            if input.UserInputType==Enum.UserInputType.MouseButton1 and os.clock()-manualNapes.lastBegin<15 then ManualSlashPhase("end") end
+        end)
+        local function slashText(value)
+            return tostring(value):lower():gsub("<[^>]*>",""):match("^%s*(.-)%s*$")=="slash"
+        end
+        local function bindControls()
+            for button,connections in pairs(manualNapes.buttons) do
+                if not button.Parent then
+                    for _,connection in ipairs(connections) do connection:Disconnect() end
+                    manualNapes.buttons[button]=nil
+                end
+            end
+            local interface=PlayerGui:FindFirstChild("Interface")
+            for _,button in ipairs(interface and interface:GetDescendants() or {}) do
+                if button:IsA("GuiButton") and not manualNapes.buttons[button] then
+                    local matches=slashText(button.Name) or (button:IsA("TextButton") and slashText(button.Text))
+                    if not matches then
+                        for _,label in ipairs(button:GetDescendants()) do
+                            if label:IsA("TextLabel") and slashText(label.Text) then matches=true; break end
+                        end
+                    end
+                    if matches then
+                        local function pointer(input) return input.UserInputType==Enum.UserInputType.MouseButton1 or input.UserInputType==Enum.UserInputType.Touch end
+                        manualNapes.buttons[button]={
+                            button.InputBegan:Connect(function(input) if pointer(input) then ManualSlashPhase("begin") end end),
+                            button.InputEnded:Connect(function(input) if pointer(input) then ManualSlashPhase("end") end end),
+                        }
+                    end
+                end
+            end
+            for tool,connections in pairs(manualNapes.toolConnections) do
+                if not tool.Parent or tool.Parent~=LocalPlayer.Character then
+                    for _,connection in ipairs(connections) do connection:Disconnect() end
+                    manualNapes.toolConnections[tool]=nil
+                end
+            end
+            local character=LocalPlayer.Character
+            for _,tool in ipairs(character and character:GetChildren() or {}) do
+                if tool:IsA("Tool") and not manualNapes.toolConnections[tool] then
+                    manualNapes.toolConnections[tool]={
+                        tool.Activated:Connect(function() ManualSlashPhase("begin") end),
+                        tool.Deactivated:Connect(function() ManualSlashPhase("end") end),
+                    }
+                end
+            end
+        end
+        task.spawn(function()
+            for i,part in ipairs(workspace:GetDescendants()) do
+                if not Alive() then break end
+                TrackManualNape(part)
+                if i%1000==0 then task.wait() end
+            end
+            while Alive() do
+                local ok,err=pcall(bindControls)
+                if not ok then Farm.LastAttackIssue="Manual slash control binding: "..tostring(err) end
+                task.wait(1)
+            end
+            for _,connection in ipairs(manualNapes.connections) do connection:Disconnect() end
+            for _,connections in pairs(manualNapes.buttons) do for _,connection in ipairs(connections) do connection:Disconnect() end end
+            for _,connections in pairs(manualNapes.toolConnections) do for _,connection in ipairs(connections) do connection:Disconnect() end end
+        end)
+    end
+
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
@@ -4558,7 +4609,7 @@ do
         end
         return #out > 0 and out or nil
     end
-    local function SlashBurst(parts) return Slash(parts) end
+    local function SlashBurst(parts) return false end
     local StatsSvc = game:GetService("Stats")
     local PING_BACKOFF = true   -- ตั้งเป็น false ถ้าไม่อยากให้ลดความถี่ตามปิง
     local PING_LIMIT = 350      -- ms: ปิงเกินนี้จะหน่วงช่วงโจมตีให้ห่างขึ้น
