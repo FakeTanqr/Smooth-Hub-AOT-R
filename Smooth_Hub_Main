@@ -4069,10 +4069,8 @@ do
                 for _,part in ipairs(parts) do
                     if not Alive() then return end
                     if CanonicalNape(part) then
-                        if not WaitForHitToken() then return end
                         remote:FireServer("Hitboxes","Register",part,math.random(625,850))
                         sent=sent+1
-                        if sent%6==0 then task.wait(.02) end
                     end
                 end
             end
@@ -4088,7 +4086,7 @@ do
             local phaseOk,phaseError=pcall(function()
                 task.wait(.04)
                 for _,part in ipairs(parts) do
-                    if CanonicalNape(part) and WaitForHitToken() then
+                    if CanonicalNape(part) then
                         remote:FireServer("Hitboxes","Register",part,math.random(625,850))
                         sent=sent+1
                     end
@@ -4286,9 +4284,7 @@ do
                 for _,part in ipairs(parts) do
                     if not Alive() then return end
                     if CanonicalNape(part) then
-                        while Alive() and NetPending()>=NET_QUEUE_MAX-2 do task.wait(.02) end
-                        if not Alive() then return end
-                        NetPush(remote,"Spears","S_Explode",part.Position)
+                        remote:FireServer("Spears","S_Explode",part.Position)
                     end
                 end
                 Farm.LastAttackIssue=nil
