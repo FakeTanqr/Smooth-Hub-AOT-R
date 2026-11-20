@@ -4237,8 +4237,8 @@ local function ResolveMapCenter(root)
                 centerState.character=nil
                 startAt=os.clock()+math.max(0,tonumber(Cfg.StartDelay) or 0)
             end
-            local enabled=(Cfg.AutoFarm or Cfg.AutoFarmThunder) and Farm.CanUseHere()
-            local busy=Farm.NpcBusy or Farm.LootBusy or Farm.Refilling or Farm.FailSafeActive
+            local enabled=(Cfg.AutoFarmSmart or Cfg.AutoFarm or Cfg.AutoFarmThunder) and Farm.CanUseHere()
+            local busy=Farm.NpcBusy or Farm.LootBusy or Farm.CratePending or SH.QuestHold or Farm.Refilling or Farm.FailSafeActive
                 or (Farm.PauseUntil and Farm.PauseUntil>os.clock())
                 or (Farm.MovePauseUntil and Farm.MovePauseUntil>os.clock())
                 or (Cfg.AutoClearWave and SH.PlayOn())
