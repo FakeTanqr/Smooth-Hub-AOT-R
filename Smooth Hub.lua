@@ -4008,80 +4008,25 @@ do
         end
         return false
     end
-        local function Slash(parts)
-        local remote=Post()
-        if not remote then Farm.LastAttackIssue="Slash POST remote unavailable"; return false end
-        -- Preserve the original working Smooth Hub packet protocol.
-        local candidates=ResolvedTargets()
-        local napes={}
-        for _,part in ipairs(candidates) do
-            if CanonicalNape(part) then napes[#napes+1]=part end
-        end
-        if #napes==0 then Farm.LastAttackIssue="No replicated living napes"; return false end
-        local sent=0
-        local first=true
-        -- Bounded chunks keep a full transaction together in the existing queue.
-        -- No player-distance filter; the server may still reject distant hits.
-        for index=1,#napes,12 do
-            if not Alive() then break end
-            local chunk={}
-            for j=index,math.min(index+11,#napes) do chunk[#chunk+1]=napes[j] end
-            if NetPending()+#chunk+2>NET_QUEUE_MAX then
-                Farm.LastAttackIssue="Slash queue capacity reached"
-                break
-            end
-            local reps=Reps(#chunk)
-            if reps<1 then break end
-            if first then first=false end
-            NetPush(remote,"Attacks","Slash",true)
-            for r=1,reps do
-                for _,part in ipairs(chunk) do
-                    if CanonicalNape(part) then
-                        NetPush(remote,"Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
-                        sent=sent+1
-                    end
+    local function Slash(parts)
+        local remote = Post()
+        if not remote then return false end
+        if typeof(parts) == "Instance" then parts = { parts } end
+        if NetPending() > NET_QUEUE_MAX then return false end
+        local reps = Reps(#parts)
+        if reps<1 or NetPending()+reps*#parts+2>NET_QUEUE_MAX then return false end
+        NetPush(remote, "Attacks", "Slash", true)
+        for r = 1, reps do
+            for i, part in ipairs(parts) do
+                if PRIORITY[part] or r <= OtherMult() then
+                    NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
                 end
             end
-            NetPush(remote,"Attacks","Slash",false)
         end
-        B.Hits=B.Hits+sent
-        Farm.ManualSlashStatus="Manual Slash: "..sent.." nape requests queued; damage unconfirmed"
-        if sent>0 then Farm.LastAttackIssue=nil end
-        return sent>0
+        NetPush(remote, "Attacks", "Slash", false)
+        B.Hits = B.Hits + #parts
+        return true
     end
-    do
-        local UIS=game:GetService("UserInputService")
-        local held=false
-        local nextSlash=0
-        local function manualAttack()
-            if not Alive() or UIS:GetFocusedTextBox() then return end
-            if os.clock()<nextSlash then return end
-            nextSlash=os.clock()+.4
-            task.defer(function()
-                if Alive() then
-                    local ok,err=pcall(Slash)
-                    if not ok then Farm.LastAttackIssue="Manual Slash error: "..tostring(err) end
-                end
-            end)
-        end
-        local begin=UIS.InputBegan:Connect(function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 then
-                held=true
-                manualAttack()
-            end
-        end)
-        local ended=UIS.InputEnded:Connect(function(input)
-            if input.UserInputType==Enum.UserInputType.MouseButton1 then held=false end
-        end)
-        task.spawn(function()
-            while Alive() do
-                task.wait(.1)
-                if held then manualAttack() end
-            end
-            begin:Disconnect();ended:Disconnect()
-        end)
-    end
-
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
@@ -4532,7 +4477,7 @@ do
         end
         return #out > 0 and out or nil
     end
-        local function SlashBurst(parts) return false end
+    local function SlashBurst(parts) return Slash(parts) end
     local StatsSvc = game:GetService("Stats")
     local PING_BACKOFF = true   -- ตั้งเป็น false ถ้าไม่อยากให้ลดความถี่ตามปิง
     local PING_LIMIT = 350      -- ms: ปิงเกินนี้จะหน่วงช่วงโจมตีให้ห่างขึ้น
@@ -4658,7 +4603,7 @@ do
                     if Spear(targets) then Farm.InputStatus="One spear request in progress; all loaded living napes" end
                 else
                     if Farm.BladesBusy and Farm.BladesBusy() then Farm.InputStatus="Waiting for blade reload"; return end
-                    -- Blade hit registration is driven by the user's real M1.
+                    Slash(targets)
                 end
                 if Farm.LastAttackIssue then Farm.InputStatus=Farm.LastAttackIssue end
             end,function(e) return tostring(e) end)
