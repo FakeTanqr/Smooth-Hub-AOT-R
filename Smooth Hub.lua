@@ -1,8 +1,8 @@
--- Smooth Hub Aotr merged full script
+-- Smooth Hub Aotr targeted merge
 local source=[================[
--- Smooth Hub Aotr: center hover + refill + same-build teleport continuation
--- Base: user-provided Smooth Hub Aotr.txt. Combat functions are unchanged.
--- Server refill distance checks and movement behavior are not guaranteed.
+-- Smooth Hub Aotr merged: reference refill, center hover, SafeFarm gas/jump behavior, same-build autoexecute
+-- Base combat and all unrelated features are unchanged.
+-- SafeFarm behavior is not a verified shadow-ban bypass.
 -- Remote-only Auto Farm update, based on the supplied original source.
 -- Main/hub first-launch toggles OFF; versioned automatic session saving.
 -- Official Cascade latest endpoint retained. Runtime download still required.
@@ -3416,7 +3416,7 @@ do
     AddFarmSlider(MainForm, function(v) return "Set Start Farm ( " .. v .. "s )" end,
         "Wait after spawning before farming. 0 = start right away.", "StartDelay", "OnStartDelay")
     AddFarmSlider(MainForm, function(v) return "Fly Height ( " .. v .. " studs )" end,
-        "Center-hover height (0-500 studs), based on the map center or initial titan-field fallback.", "FlyHeight", "OnFlyHeight")
+        "Center-hover height (0-500 studs), using map geometry with titan-field fallback.", "FlyHeight", "OnFlyHeight")
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Range ( " .. v .. " studs )" end,
     -- [hidden] "Auto Farm [ TS ]: hits every titan within this distance of you (50-10000).", "ThunderRange", nil)
     -- [hidden] AddFarmSlider(MainForm, function(v) return "Thunder Spears Targets per Shot ( " .. ((v <= 0 or v >= 200) and "All" or v) .. " )" end,
@@ -4208,10 +4208,16 @@ local function ResolveMapCenter(root)
         else
             -- Explicit fallback: initial living-titan field bounds, not a claim
             -- that this equals the map's authored center.
-            for _,part in ipairs(ResolvedTargets()) do
-                local v=part.Position
-                minimum=minimum and Vector3.new(math.min(minimum.X,v.X),math.min(minimum.Y,v.Y),math.min(minimum.Z,v.Z)) or v
-                maximum=maximum and Vector3.new(math.max(maximum.X,v.X),math.max(maximum.Y,v.Y),math.max(maximum.Z,v.Z)) or v
+            local folder=workspace:FindFirstChild("Titans")
+            for _,model in ipairs(folder and folder:GetChildren() or {}) do
+                if model:IsA("Model") and TitanAlive(model) then
+                    local part=NapeOf(model) or model.PrimaryPart or model:FindFirstChild("HumanoidRootPart")
+                    if part then
+                        local v=part.Position
+                        minimum=minimum and Vector3.new(math.min(minimum.X,v.X),math.min(minimum.Y,v.Y),math.min(minimum.Z,v.Z)) or v
+                        maximum=maximum and Vector3.new(math.max(maximum.X,v.X),math.max(maximum.Y,v.Y),math.max(maximum.Z,v.Z)) or v
+                    end
+                end
             end
             if minimum and maximum then center=(minimum+maximum)*.5; centerState.status="Initial titan-field center (map geometry unavailable)"
             else center=root.Position; centerState.status="Initial position (center unavailable)" end
@@ -4223,61 +4229,66 @@ local function ResolveMapCenter(root)
         Farm.CenterHoverStatus=centerState.status
         return centerState.anchor
     end
-    -- Independent center-hover movement owner. Does not depend on B.Target or Running().
     task.spawn(function()
-        local previousCharacter=nil
-        local startAt=0
-        local lastStatus=""
+        local lastPick = 0
+        local orbitAngle = 0
         while Alive() do
-            local dt=RunService.Heartbeat:Wait()
-            local root,char=MyRoot()
-            if char~=previousCharacter then
-                previousCharacter=char
-                centerState.anchor=nil
-                centerState.character=nil
-                startAt=os.clock()+math.max(0,tonumber(Cfg.StartDelay) or 0)
+            local dt = RunService.Heartbeat:Wait()
+            orbitAngle = (orbitAngle + ORBIT_SPEED * dt) % (math.pi * 2)
+            local root, char = MyRoot()
+            if char ~= lastChar then
+                lastChar = char
+                Farm.CharSpawnAt = os.clock()
+                readyAt = os.clock() + (Cfg.StartDelay or 0)
             end
-            local enabled=(Cfg.AutoFarmSmart or Cfg.AutoFarm or Cfg.AutoFarmThunder) and Farm.CanUseHere()
-            local busy=Farm.NpcBusy or Farm.LootBusy or Farm.CratePending or SH.QuestHold or Farm.Refilling or Farm.FailSafeActive
-                or (Farm.PauseUntil and Farm.PauseUntil>os.clock())
-                or (Farm.MovePauseUntil and Farm.MovePauseUntil>os.clock())
-                or (Cfg.AutoClearWave and SH.PlayOn())
-            local status
-            if not enabled then
-                status="Off"
+            if Cfg.AutoFarm and Running() and Farm.BladesBusy and Farm.BladesBusy() then
+                B.Status = "Reloading"
+                if root then pcall(function() root.AssemblyLinearVelocity = Vector3.zero end) end
+            elseif not Running() then
+                B.Target = nil
+                if Cfg.AutoFarm or Cfg.AutoFarmThunder then B.Status = "Paused"
+                else B.Status="Idle"; centerState.anchor=nil end
             elseif not root then
-                status="Waiting for character"
-            elseif busy then
-                status="Yielded to existing movement/refill"
-            elseif os.clock()<startAt then
-                status="Start delay"
-            elseif Cfg.WaitForBoss and Farm.BossBlock() then
-                status="Waiting for boss"
+                B.Target = nil
+                B.Status = "Waiting for character"
+            elseif os.clock() < readyAt then
+                B.Status = "Start delay"
+            elseif Farm.BossBlock() then
+                B.Target = nil
+                B.Status = "Waiting for boss"
+                pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
             else
-                local center=ResolveMapCenter(root)
-                local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
-                local destination=center+Vector3.new(0,height,0)
-                local difference=destination-root.Position
-                local distance=difference.Magnitude
-                if distance>1 then
-                    local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,1,600)
-                    local step=math.min(distance,speed*math.min(dt,.1))
-                    local ok,err=pcall(function()
-                        root.AssemblyLinearVelocity=Vector3.zero
-                        root.CFrame=CFrame.new(root.Position+difference.Unit*step)*root.CFrame.Rotation
-                    end)
-                    status=ok and "Flying to center" or ("Center movement error: "..tostring(err))
-                else
-                    pcall(function() root.AssemblyLinearVelocity=Vector3.zero end)
-                    status="Hovering at center"
+                if B.Target and not TitanAlive(B.Target) then
+                    B.Target = nil
+                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
                 end
-            end
-            if status~=lastStatus then
-                lastStatus=status
-                Farm.CenterHoverStatus=status
+                if not B.Target and os.clock() - lastPick > 0.4 then
+                    lastPick = os.clock()
+                    B.Target = PickTitan(root)
+                end
+                local nape = B.Target and NapeOf(B.Target)
+                if nape then
+                    local anchor=ResolveMapCenter(root)
+                    local height=math.clamp(tonumber(Cfg.FlyHeight) or 230,0,500)
+                    local goal=anchor+Vector3.new(0,height,0)
+                    local diff=goal-root.Position
+                    local dist=diff.Magnitude
+                    pcall(function() root.AssemblyLinearVelocity=Vector3.zero end)
+                    if dist>1 then
+                        local speed=math.clamp(tonumber(Cfg.FlySpeed) or 600,30,600)
+                        local step=math.min(speed*math.min(dt,.1),dist)
+                        root.CFrame=CFrame.new(root.Position+diff.Unit*step)
+                    end
+                    B.Status=dist<=ARRIVE_DIST and "Center hover / all-nape sweep" or "Flying to center hover"
+                else
+                    B.Target = nil
+                    B.Status = "Searching for titans"
+                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                end
             end
         end
     end)
+    -- 💥 Burst Mode (ทำงานเมื่อเปิด Damage Multiplier): ยิงเป็นชุดละ BURST_SIZE ครั้งใส่ไททัน "เฉพาะตอนบินถึงตัวแล้ว"
     -- แล้วพัก BURST_GAP วินาทีค่อยยิงชุดถัดไป (แทนการทยอยยิงทีละ 1 ใส่ไททัน 9 ตัวตลอดเวลา) | BURST_TARGETS = จำนวนไททันต่อชุด
     local BURST_MODE = false -- Blades: กลับไปแบบเดิม (ฟันหลายตัวพร้อมกันต่อรอบ) | Thunder Spears ยิงเป็นชุดแยกด้านล่าง (SPEAR_BURST)
     local BURST_SIZE = 10
@@ -13235,80 +13246,50 @@ SH.say("Settings loaded.")
 local AUTOEXEC_URL=nil
 UiSync.ReloadUrl=nil
 local queueTeleport=queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
-local resolvedEnv=(type(getgenv)=="function" and getgenv()) or _G
-local resolvedSession=resolvedEnv.SmoothHubAotrSession or HttpService:GenerateGUID(false)
-resolvedEnv.SmoothHubAotrSession=resolvedSession
-local resolvedCache="SmoothHubAotr_"..resolvedSession..".lua"
-local resolvedState="SmoothHubAotr_"..resolvedSession..".json"
-local queued=false
+local autoEnv=(type(getgenv)=="function" and getgenv()) or _G
+local autoSession=autoEnv.SmoothHubAotrSession or HttpService:GenerateGUID(false)
+autoEnv.SmoothHubAotrSession=autoSession
+local autoCache="SmoothHubAotr_"..autoSession..".lua"
+local autoState="SmoothHubAotr_"..autoSession..".json"
+local autoQueued=false
 local function QueueAutoExecute()
-    if queued then return true end
-    if type(queueTeleport)~="function" then warn("[Smooth Hub] Teleport queue unavailable in this executor"); return false end
-    local source=resolvedEnv.SmoothHubAotrCurrentSource
-    if type(source)~="string" or #source<100 then warn("[Smooth Hub] Current build source unavailable; no other script substituted"); return false end
-    local cached=false
-    if type(writefile)=="function" then cached=pcall(writefile,resolvedCache,source) end
+    if autoQueued then return true end
+    if type(queueTeleport)~="function" then warn("[Smooth Hub] Executor has no teleport queue API"); return false end
+    local source=autoEnv.SmoothHubAotrCurrentSource
+    if type(source)~="string" or #source<100 then warn("[Smooth Hub] Exact current source unavailable"); return false end
+    local cached=type(writefile)=="function" and pcall(writefile,autoCache,source)
     local payload=string.format([==[
 local env=(type(getgenv)=="function" and getgenv()) or _G
-local session=%q
-local cache=%q
-local state=%q
-local fallback=%q
-local length=%d
+local session=%q; local cache=%q; local state=%q; local fallback=%q; local expected=%d
 if not game:IsLoaded() then game.Loaded:Wait() end
-local players=game:GetService("Players")
-while not players.LocalPlayer do task.wait(.05) end
+local players=game:GetService("Players"); while not players.LocalPlayer do task.wait(.05) end
 if type(readfile)=="function" and type(isfile)=="function" then
  local ok,data=pcall(function() if isfile(state) then return game:GetService("HttpService"):JSONDecode(readfile(state)) end end)
  if ok and type(data)=="table" and data.Session==session and data.Enabled==false then return end
 end
-local job=tostring(game.JobId)
-if env.SmoothHubAotrJob==job and env.SmoothHubAotrStarted then return end
+local job=tostring(game.JobId); if env.SmoothHubAotrJob==job and env.SmoothHubAotrStarted then return end
 local source=nil
-if type(readfile)=="function" then
- local ok,data=pcall(readfile,cache)
- if ok and type(data)=="string" and #data==length then source=data end
-end
-if not source and #fallback==length then source=fallback end
-if not source then warn("[Smooth Hub] Exact teleport source unavailable; reexecute the local file"); return end
-local fn,err=loadstring(source,"Smooth Hub Aotr")
-if not fn then warn("[Smooth Hub] Teleport compile error: "..tostring(err)); return end
-env.SmoothHubAotrCurrentSource=source
-env.SmoothHubAotrSession=session
-env.SmoothHubAotrJob=job
-env.SmoothHubAotrStarted=true
-local ok,runErr=xpcall(fn,function(e) return tostring(e) end)
-if not ok then env.SmoothHubAotrStarted=false; warn("[Smooth Hub] Teleport runtime error: "..tostring(runErr)) end
-]==],resolvedSession,resolvedCache,resolvedState,cached and "" or source,#source)
-    local ok,err=pcall(queueTeleport,payload)
-    if ok then queued=true else warn("[Smooth Hub] Teleport queue error: "..tostring(err)) end
+if type(readfile)=="function" then local ok,data=pcall(readfile,cache); if ok and type(data)=="string" and #data==expected then source=data end end
+if not source and #fallback==expected then source=fallback end
+if not source then warn("[Smooth Hub] Exact continuation source unavailable; reexecute local file"); return end
+local fn,err=loadstring(source,"Smooth Hub Aotr"); if not fn then warn("[Smooth Hub] Compile error: "..tostring(err)); return end
+env.SmoothHubAotrCurrentSource=source; env.SmoothHubAotrSession=session; env.SmoothHubAotrJob=job; env.SmoothHubAotrStarted=true
+local ok,runErr=xpcall(fn,function(e) return tostring(e) end); if not ok then env.SmoothHubAotrStarted=false; warn("[Smooth Hub] Runtime error: "..tostring(runErr)) end
+]==],autoSession,autoCache,autoState,cached and "" or source,#source)
+    local ok,err=pcall(queueTeleport,payload); if ok then autoQueued=true else warn("[Smooth Hub] Queue error: "..tostring(err)) end
     return ok
 end
 local function ApplyAutoExecute(on)
-    if type(writefile)=="function" then
-        pcall(writefile,resolvedState,HttpService:JSONEncode({Session=resolvedSession,Enabled=on==true}))
-    end
-    if on then
-        SettingsStore.Flush("AOTR")
-        QueueAutoExecute()
-    else
-        queued=false
-    end
+    if type(writefile)=="function" then pcall(writefile,autoState,HttpService:JSONEncode({Session=autoSession,Enabled=on==true})) end
+    if on then SettingsStore.Flush("AOTR"); QueueAutoExecute() else autoQueued=false end
 end
--- Preserve existing toggle and autoexec state; this exact source is queued.
 if HubConfig.AutoExecute then QueueAutoExecute() end
-local autoexecTeleport=LocalPlayer.OnTeleport:Connect(function(state)
+local autoTeleport=LocalPlayer.OnTeleport:Connect(function(state)
     if not Alive() then return end
-    if state==Enum.TeleportState.Failed then queued=false end
-    if HubConfig.AutoExecute then
-        pcall(function() SettingsStore.Flush("AOTR") end)
-        QueueAutoExecute()
-    end
+    if state==Enum.TeleportState.Failed then autoQueued=false end
+    if HubConfig.AutoExecute then pcall(function() SettingsStore.Flush("AOTR") end); QueueAutoExecute() end
 end)
-task.spawn(function()
-    while Alive() do task.wait(.5) end
-    autoexecTeleport:Disconnect()
-end)
+task.spawn(function() while Alive() do task.wait(.5) end; autoTeleport:Disconnect() end)
 local function HopServer()
     pcall(function()
         local servers = {}
@@ -18263,6 +18244,6 @@ end
 SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")]================]
 local env=(type(getgenv)=="function" and getgenv()) or _G
 env.SmoothHubAotrCurrentSource=source
-local fn,err=loadstring(source,"Smooth Hub Aotr merged")
+local fn,err=loadstring(source,"Smooth Hub Aotr targeted merge")
 if not fn then error("Smooth Hub compile error: "..tostring(err)) end
 return fn()
