@@ -4009,11 +4009,6 @@ do
         return false
     end
         -- Manual blade attacks only. No synthetic input or Slash start/end remotes.
-    local function Slash(parts)
-        -- Only manual input is allowed to start blade hit registration.
-        return false
-    end
-    do -- isolate manual-Nape listeners from the farm function local register scope
     local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false}
     local manualUIS=game:GetService("UserInputService")
     local function CanonicalManualNape(part)
@@ -4040,7 +4035,7 @@ do
         return result
     end
     local function ManualBladeReady()
-        if not Alive() or not Farm.CanUseHere() or not MyRoot() then return false end
+        if not Alive() or not MyRoot() then return false end
         if manualUIS:GetFocusedTextBox() then return false end
         if Cfg.UseThunderSpears or Cfg.AutoFarmThunder then return false end
         return true
@@ -4055,18 +4050,20 @@ do
         manualNapes.busy=true; manualNapes.lastSweep=os.clock()
         local sent=0
         local ok,err=xpcall(function()
-            -- Preserve the attached working file's hit-registration signature.
-            -- Nape identity is not a verified critical-chance control.
+            -- Match the attached working Smooth Hub attack protocol: Slash begin,
+            -- nape-only Register hits, Slash end. Only invoked by real manual input.
+            remote:FireServer("Attacks", "Slash", true)
             local repeats=Cfg.DamageMultiplier and 10 or 1
             for _=1,repeats do
                 for _,part in ipairs(parts) do
-                    if not Alive() then return end
+                    if not Alive() then break end
                     if CanonicalManualNape(part) then
-                        remote:FireServer("Hitboxes","Register",part,143+math.random()*10,.26+math.random()*.25)
+                        remote:FireServer("Hitboxes", "Register", part, 143+math.random()*10, .26+math.random()*.25)
                         sent=sent+1
                     end
                 end
             end
+            remote:FireServer("Attacks", "Slash", false)
         end,function(e) return tostring(e) end)
         manualNapes.busy=false
         if not ok then Farm.LastAttackIssue="Manual nape registration error: "..tostring(err); warn(Farm.LastAttackIssue); return false end
@@ -4085,6 +4082,11 @@ do
         task.delay(phase=="begin" and .08 or .02,function()
             if Alive() then ManualNapeSweep() end
         end)
+    end
+    local function Slash(parts)
+        -- Original automatic workers may still call this helper. They must
+        -- not initiate blade attacks or submit hits without manual input.
+        return false
     end
     do
         local function connect(signal,callback)
@@ -4162,8 +4164,6 @@ do
     end
 
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
-    end
-
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
         if n <= 0 or n >= 200 then return math.huge end
