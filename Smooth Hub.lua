@@ -817,6 +817,21 @@ local okLib, Cascade = pcall(function()
     return lib
 end)
 if not okLib or type(Cascade) ~= "table" then
+    local detail=tostring(Cascade)
+    warn("[Smooth Hub] UI load failure: "..detail)
+    pcall(function()
+        local screen=Instance.new("ScreenGui")
+        screen.Name="SmoothHubStartupError"; screen.ResetOnSpawn=false; screen.DisplayOrder=9999
+        screen.Parent=PlayerGui
+        local label=Instance.new("TextLabel")
+        label.Name="ErrorDetails"; label.AnchorPoint=Vector2.new(.5,.5)
+        label.Position=UDim2.fromScale(.5,.5); label.Size=UDim2.new(.85,0,0,170)
+        label.BackgroundColor3=Color3.fromRGB(25,20,25)
+        label.TextColor3=Color3.fromRGB(255,225,225)
+        label.TextWrapped=true; label.TextSize=15; label.Font=Enum.Font.Gotham
+        label.Text="Smooth Hub UI failed to load.\n"..detail.."\nCheck the executor console for details."
+        label.Parent=screen
+    end)
     SH.say("Could not load the interface. Check your internet connection.")
     SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
     pcall(function()
@@ -4009,6 +4024,12 @@ do
         return false
     end
         -- Manual blade attacks only. No synthetic input or Slash start/end remotes.
+    local function Slash(parts)
+        -- Original automatic workers may still call this helper. They must
+        -- not initiate blade attacks or submit hits without manual input.
+        return false
+    end
+    do -- manual-Nape listeners have an isolated local scope
     local manualNapes={parts=setmetatable({}, {__mode="k"}),connections={},buttons={},toolConnections={},lastBegin=-math.huge,lastEnd=-math.huge,lastSweep=-math.huge,busy=false}
     local manualUIS=game:GetService("UserInputService")
     local function CanonicalManualNape(part)
@@ -4082,11 +4103,6 @@ do
         task.delay(phase=="begin" and .08 or .02,function()
             if Alive() then ManualNapeSweep() end
         end)
-    end
-    local function Slash(parts)
-        -- Original automatic workers may still call this helper. They must
-        -- not initiate blade attacks or submit hits without manual input.
-        return false
     end
     do
         local function connect(signal,callback)
@@ -4164,6 +4180,7 @@ do
     end
 
     -- 🎯 Thunder Spears: จำนวนเป้าต่อชุด (0 หรือ 200 = ทุกตัว) | ใช้ค่าจากสไลเดอร์ แทน HIT_COUNT ของดาบ
+    end
     local function SpearLimit()
         local n = Cfg.ThunderTargets or 0
         if n <= 0 or n >= 200 then return math.huge end
@@ -18464,6 +18481,41 @@ end
 SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")]================]
 local env=(type(getgenv)=="function" and getgenv()) or _G
 env.SmoothHubResolvedSource=source
-local fn,err=loadstring(source,"Smooth Hub Resolved")
-if not fn then error("Smooth Hub Resolved compile error: "..tostring(err)) end
-return fn()
+local function showStartupError(message)
+    warn("[Smooth Hub Resolved] "..tostring(message))
+    pcall(function()
+        local players=game:GetService("Players")
+        local player=players.LocalPlayer
+        if not player then return end
+        local playerGui=player:WaitForChild("PlayerGui",5)
+        if not playerGui then return end
+        local existing=playerGui:FindFirstChild("SmoothHubStartupError")
+        if existing then existing:Destroy() end
+        local gui=Instance.new("ScreenGui")
+        gui.Name="SmoothHubStartupError"; gui.ResetOnSpawn=false; gui.DisplayOrder=9999
+        gui.Parent=playerGui
+        local label=Instance.new("TextLabel")
+        label.Size=UDim2.new(.88,0,0,200)
+        label.AnchorPoint=Vector2.new(.5,.5)
+        label.Position=UDim2.fromScale(.5,.5)
+        label.BackgroundColor3=Color3.fromRGB(28,22,28)
+        label.TextColor3=Color3.fromRGB(255,225,225)
+        label.TextWrapped=true; label.TextSize=14; label.Font=Enum.Font.Gotham
+        label.Text="Smooth Hub startup failed.\n"..tostring(message).."\nCheck the executor console for details."
+        label.Parent=gui
+    end)
+end
+local okCompile,fn,compileError=pcall(loadstring,source,"Smooth Hub Resolved")
+if not okCompile or type(fn)~="function" then
+    showStartupError("Compile error: "..tostring(compileError or fn))
+    return
+end
+local okRun,runError=xpcall(fn,function(e)
+    local text=tostring(e)
+    if debug and type(debug.traceback)=="function" then
+        local ok,trace=pcall(debug.traceback,text,2)
+        if ok then return trace end
+    end
+    return text
+end)
+if not okRun then showStartupError("Runtime error: "..tostring(runError)) end
