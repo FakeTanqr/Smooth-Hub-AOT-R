@@ -3535,24 +3535,29 @@ do
         return hb and hb:FindFirstChild("Hit")
     end
     local function NapeOf(titan)
-        local hit = HitParts(titan)
-        if hit then
-            for _, name in ipairs({"Nape", "nape", "NAPE", "Neck", "WeakPoint"}) do
-                local nape = hit:FindFirstChild(name)
-                if nape and nape:IsA("BasePart") then return nape end
-            end
-            for _, d in ipairs(hit:GetDescendants()) do
-                if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape") then
-                    return d
+        if not titan or not titan.Parent then return nil end
+        local ok, result = pcall(function()
+            local hit = HitParts(titan)
+            if hit then
+                local direct = hit:FindFirstChild("Nape") or hit:FindFirstChild("nape")
+                if direct and direct:IsA("BasePart") then return direct end
+                for _, d in ipairs(hit:GetChildren()) do
+                    if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape", 1, true) then
+                        return d
+                    end
                 end
             end
-        end
-        -- fallback: search whole titan model
-        for _, d in ipairs(titan:GetDescendants()) do
-            if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape") then
-                return d
+            local hb = titan:FindFirstChild("Hitboxes")
+            if hb then
+                for _, d in ipairs(hb:GetDescendants()) do
+                    if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape", 1, true) then
+                        return d
+                    end
+                end
             end
-        end
+            return nil
+        end)
+        if ok then return result end
         return nil
     end
     local function TitanAlive(titan)
@@ -4234,32 +4239,40 @@ do
                     B.Target = PickTitan(root)
                 end
                 -- Hover at map center (does not follow titans)
-                local MAP_CENTER = Vector3.new(0, math.max(Cfg.FlyHeight or 230, 150), 0)
+                local y = math.max(tonumber(Cfg.FlyHeight) or 230, 150)
+                local MAP_CENTER = Vector3.new(0, y, 0)
                 do
-                    local folder = workspace:FindFirstChild("Titans") or workspace
-                    local okbb, cf, sz = pcall(function()
-                        local c, s = folder:GetBoundingBox()
-                        return c, s
-                    end)
-                    -- pcall only returns first value; use safe fallback center
-                    if typeof(folder.GetBoundingBox) == "function" then
-                        local ok2, c2 = pcall(function()
-                            local c = select(1, folder:GetBoundingBox())
-                            return c
-                        end)
+                    local folder = workspace:FindFirstChild("Titans")
+                    if folder and folder:IsA("Model") then
+                        local ok2, c2 = pcall(function() return select(1, folder:GetBoundingBox()) end)
                         if ok2 and typeof(c2) == "CFrame" then
-                            MAP_CENTER = Vector3.new(c2.Position.X, math.max(Cfg.FlyHeight or 230, 150), c2.Position.Z)
+                            MAP_CENTER = Vector3.new(c2.Position.X, y, c2.Position.Z)
+                        end
+                    elseif folder then
+                        local sum, n = Vector3.zero, 0
+                        for _, t in ipairs(folder:GetChildren()) do
+                            if t:IsA("Model") then
+                                local r = t.PrimaryPart or t:FindFirstChild("HumanoidRootPart")
+                                if r then sum = sum + r.Position; n = n + 1 end
+                            end
+                        end
+                        if n > 0 then
+                            local avg = sum / n
+                            MAP_CENTER = Vector3.new(avg.X, y, avg.Z)
                         end
                     end
                 end
                 local goal = MAP_CENTER
                 local diff = goal - root.Position
                 local dist = diff.Magnitude
-                pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                pcall(function()
+                    root.AssemblyLinearVelocity = Vector3.zero
+                    root.AssemblyAngularVelocity = Vector3.zero
+                end)
                 if dist > 2 then
-                    local step = math.min((Cfg.FlySpeed or 600) * dt, dist)
+                    local step = math.min((tonumber(Cfg.FlySpeed) or 600) * dt, dist)
                     local newPos = root.Position + diff.Unit * step
-                    root.CFrame = CFrame.new(newPos)
+                    pcall(function() root.CFrame = CFrame.new(newPos) end)
                 end
                 if B.Target and TitanAlive(B.Target) then
                     B.Status = "Attacking"
@@ -4412,17 +4425,33 @@ do
     local function HoverMapCenter()
         local root = MyRoot()
         if not root then return end
-        local y = math.max(Cfg.FlyHeight or 230, 150)
+        local y = math.max(tonumber(Cfg.FlyHeight) or 230, 150)
         local center = Vector3.new(0, y, 0)
-        local folder = workspace:FindFirstChild("Titans") or workspace
-        local ok2, c2 = pcall(function()
-            return select(1, folder:GetBoundingBox())
-        end)
-        if ok2 and typeof(c2) == "CFrame" then
-            center = Vector3.new(c2.Position.X, y, c2.Position.Z)
+        local folder = workspace:FindFirstChild("Titans")
+        if folder and folder:IsA("Model") then
+            local ok2, c2 = pcall(function()
+                return select(1, folder:GetBoundingBox())
+            end)
+            if ok2 and typeof(c2) == "CFrame" then
+                center = Vector3.new(c2.Position.X, y, c2.Position.Z)
+            end
+        elseif folder then
+            -- average titan roots if folder is not a Model
+            local sum, n = Vector3.zero, 0
+            for _, t in ipairs(folder:GetChildren()) do
+                if t:IsA("Model") then
+                    local r = t.PrimaryPart or t:FindFirstChild("HumanoidRootPart")
+                    if r then sum = sum + r.Position; n = n + 1 end
+                end
+            end
+            if n > 0 then
+                local avg = sum / n
+                center = Vector3.new(avg.X, y, avg.Z)
+            end
         end
         pcall(function()
             root.AssemblyLinearVelocity = Vector3.zero
+            root.AssemblyAngularVelocity = Vector3.zero
             root.CFrame = CFrame.new(center)
         end)
     end
@@ -5007,32 +5036,51 @@ do
     local function RemoteRefill(station,need,report)
         if remoteRefillBusy or os.clock()<remoteRefillNextAt then return false end
         local post
-        pcall(function() post=ReplicatedStorage.Assets.Remotes:FindFirstChild("POST") end)
-        if not post or not post:IsA("RemoteEvent") then report("Refill RemoteEvent unavailable"); return false end
-        remoteRefillBusy=true; remoteRefillNextAt=os.clock()+0.35
-        Farm.Refilling=true
-        local beforeGas=ReadGas()
-        local neededBefore=need()
-        local ok,err=pcall(function()
-            -- fire with station if present; also fire nil-station path so distance never blocks
-            if station and station.Parent then
-                post:FireServer("Attacks","Reload",station)
-            end
-            post:FireServer("Attacks","Reload",station or workspace)
-            pcall(function() post:FireServer("Attacks","Reload") end)
+        pcall(function()
+            local assets = ReplicatedStorage:FindFirstChild("Assets")
+            local remotes = assets and assets:FindFirstChild("Remotes")
+            post = remotes and remotes:FindFirstChild("POST")
         end)
-        local confirmed=false
+        if not post or not post:IsA("RemoteEvent") then
+            report("Refill RemoteEvent unavailable")
+            return false
+        end
+        remoteRefillBusy = true
+        remoteRefillNextAt = os.clock() + 0.35
+        Farm.Refilling = true
+        local beforeGas = ReadGas()
+        local neededBefore = false
+        pcall(function() neededBefore = need() and true or false end)
+        local ok, err = pcall(function()
+            if station and station.Parent then
+                post:FireServer("Attacks", "Reload", station)
+            else
+                -- no station replicated: still request reload remotely (distance independent)
+                post:FireServer("Attacks", "Reload")
+            end
+        end)
+        local confirmed = false
         if ok then
-            local untilAt=os.clock()+1.2
-            while Alive() and os.clock()<untilAt do
-                local gas=ReadGas()
-                if (neededBefore and not need()) or (beforeGas and gas and gas>beforeGas) then confirmed=true; break end
-                task.wait(.08)
+            local untilAt = os.clock() + 0.9
+            while Alive() and os.clock() < untilAt do
+                local stillNeed = false
+                pcall(function() stillNeed = need() and true or false end)
+                local gas = ReadGas()
+                if (neededBefore and not stillNeed) or (beforeGas and gas and gas > beforeGas) then
+                    confirmed = true
+                    break
+                end
+                task.wait(0.08)
             end
         end
-        Farm.Refilling=false; remoteRefillBusy=false
-        report(not ok and ("Refill error: "..tostring(err)) or (confirmed and "Refill resource change observed" or "Remote refill sent (any distance)"))
-        return true -- treat as success so loop stays fast
+        Farm.Refilling = false
+        remoteRefillBusy = false
+        if not ok then
+            report("Refill error: " .. tostring(err))
+            return false
+        end
+        report(confirmed and "Refill resource change observed" or "Remote refill sent (any distance)")
+        return true
     end
     local function DoRefill()
         local root=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -13448,10 +13496,16 @@ SH.SlashTrack(HubConfig,"Hub")
 SH.say("Settings loaded.")
 local AUTOEXEC_URL = "https://githubusercontent.smoothhubv1.workers.dev/raw/9949e6715b89f8c1d7b1/Attack-on-Titan-Revolution.lua"
 UiSync.ReloadUrl = AUTOEXEC_URL
-local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport) or (KRNL_LOADED and queue_on_teleport) or (identifyexecutor and (function()
-    local ok, name = pcall(identifyexecutor)
-    return ok and (name and (string.find(string.lower(tostring(name)), "synapse") or string.find(string.lower(tostring(name)), "fluxus") or string.find(string.lower(tostring(name)), "krnl") or string.find(string.lower(tostring(name)), "script")) and queue_on_teleport) or nil
-end)()) or queueonteleport or (syn and syn.queueonteleport)
+local queueTeleport = nil
+pcall(function()
+    queueTeleport = queue_on_teleport or queueonteleport
+    if not queueTeleport and syn then
+        queueTeleport = syn.queue_on_teleport or syn.queueonteleport
+    end
+    if not queueTeleport and fluxus then
+        queueTeleport = fluxus.queue_on_teleport
+    end
+end)
 local AUTOEXEC_LOCK = "SmoothHub/AutoExec.lock"
 local AUTOEXEC_LOG = "SmoothHub/AutoExec.log"
 local function AutoExecLog(text)
