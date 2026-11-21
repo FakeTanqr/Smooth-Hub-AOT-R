@@ -29,10 +29,8 @@ do
         end)
     end
     if not allowed then
-        pcall(function()
-            game:GetService("Players").LocalPlayer:Kick("This script works only in Attack on Titan Revolution. / สคริปต์นี้ใช้ได้เฉพาะเกม Attack on Titan Revolution")
-        end)
-        return
+        warn("[Smooth Hub] PlaceId not in allowlist and AOTR remotes not found. GUI will still try to load.")
+        -- do not kick / return: let UI load so nothing is silent
     end
 end
 local MENU_PLACE_ID = 13379208636
@@ -54,6 +52,7 @@ function SH.Guard(name, fn)
     local ok, err = xpcall(fn, function(e) return tostring(e) .. "\n" .. debug.traceback() end)
     if not ok then warn("[Smooth Hub] block " .. tostring(name) .. " failed to load: " .. tostring(err)) end
 end
+print("[Smooth Hub] boot place=" .. tostring(game.PlaceId) .. " job=" .. tostring(game.JobId))
 SH.say("Loading Smooth Hub | Attack on Titan Revolution (" .. (IN_MENU and "Lobby" or "In-game") .. ") ...")
 if type(_G.SmoothHubCleanup) == "function" then pcall(_G.SmoothHubCleanup) end
 local token = {}
@@ -691,6 +690,26 @@ local okLib, Cascade = pcall(function()
     return loadstring(game:HttpGet("https://github.com/cascadeui/Cascade/releases/latest/download/dist.luau"))()
 end)
 if not okLib or type(Cascade) ~= "table" then
+    -- retry direct release asset + raw mirrors
+    local mirrors = {
+        "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau",
+        "https://cdn.jsdelivr.net/gh/cascadeui/Cascade@v1.4.0/dist.luau",
+        "https://raw.githubusercontent.com/cascadeui/Cascade/v1.4.0/dist.luau",
+    }
+    for _, url in ipairs(mirrors) do
+        local ok2, res2 = pcall(function()
+            return loadstring(game:HttpGet(url))()
+        end)
+        if ok2 and type(res2) == "table" then
+            okLib, Cascade = true, res2
+            SH.say("Interface loaded via mirror: " .. url)
+            break
+        end
+    end
+end
+if not okLib or type(Cascade) ~= "table" then
+    warn("[Smooth Hub] Could not load the interface. Check executor HttpGet / internet.")
+    warn("[Smooth Hub] Cascade error: " .. tostring(Cascade))
     SH.say("Could not load the interface. Check your internet connection.")
     SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
     pcall(function()
@@ -4199,13 +4218,23 @@ do
                     lastPick = os.clock()
                     B.Target = PickTitan(root)
                 end
-                                -- Hover at map center (does not follow titans)
+                -- Hover at map center (does not follow titans)
                 local MAP_CENTER = Vector3.new(0, math.max(Cfg.FlyHeight or 230, 150), 0)
                 do
                     local folder = workspace:FindFirstChild("Titans") or workspace
-                    local okbb, cf, size = pcall(function() return folder:GetBoundingBox() end)
-                    if okbb and cf then
-                        MAP_CENTER = Vector3.new(cf.Position.X, math.max(Cfg.FlyHeight or 230, 150), cf.Position.Z)
+                    local okbb, cf, sz = pcall(function()
+                        local c, s = folder:GetBoundingBox()
+                        return c, s
+                    end)
+                    -- pcall only returns first value; use safe fallback center
+                    if typeof(folder.GetBoundingBox) == "function" then
+                        local ok2, c2 = pcall(function()
+                            local c = select(1, folder:GetBoundingBox())
+                            return c
+                        end)
+                        if ok2 and typeof(c2) == "CFrame" then
+                            MAP_CENTER = Vector3.new(c2.Position.X, math.max(Cfg.FlyHeight or 230, 150), c2.Position.Z)
+                        end
                     end
                 end
                 local goal = MAP_CENTER
@@ -4215,17 +4244,12 @@ do
                 if dist > 2 then
                     local step = math.min((Cfg.FlySpeed or 600) * dt, dist)
                     local newPos = root.Position + diff.Unit * step
-                    if false then
-                            root.CFrame = CFrame.lookAt(newPos, Vector3.new(nape.Position.X, newPos.Y, nape.Position.Z))
-                        else
-                            root.CFrame = CFrame.new(newPos)
-                        end
-                    end
-                    B.Status = (dist <= ARRIVE_DIST) and "Attacking" or "Flying to titan"
+                    root.CFrame = CFrame.new(newPos)
+                end
+                if B.Target and TitanAlive(B.Target) then
+                    B.Status = "Attacking"
                 else
-                    B.Target = nil
-                    B.Status = "Searching for titans"
-                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                    B.Status = "Hovering center / searching"
                 end
             end
         end
