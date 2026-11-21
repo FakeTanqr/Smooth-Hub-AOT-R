@@ -1,7 +1,7 @@
 -- Remote-only Auto Farm update, based on the supplied original source.
 -- Main/hub first-launch toggles OFF; versioned automatic session saving.
 -- Official Cascade latest endpoint retained. Runtime download still required.
--- Local nape expansion >=35 studs. Hover fixed to map center. Remote refill instant/any distance. Nape-only hits. AutoExecute fixed.
+-- Local nape expansion >=35 studs. No infinite reach or flight-follow added.
 -- Static review only. Local hitbox size does not establish server hit acceptance.
 --[[
 	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
@@ -29,8 +29,10 @@ do
         end)
     end
     if not allowed then
-        warn("[Smooth Hub] PlaceId not in allowlist and AOTR remotes not found. GUI will still try to load.")
-        -- do not kick / return: let UI load so nothing is silent
+        pcall(function()
+            game:GetService("Players").LocalPlayer:Kick("This shitty script works only in Attack on Titan Revolution. / สคริปต์นี้ใช้ได้เฉพาะเกม Attack on Titan Revolution")
+        end)
+        return
     end
 end
 local MENU_PLACE_ID = 13379208636
@@ -52,7 +54,6 @@ function SH.Guard(name, fn)
     local ok, err = xpcall(fn, function(e) return tostring(e) .. "\n" .. debug.traceback() end)
     if not ok then warn("[Smooth Hub] block " .. tostring(name) .. " failed to load: " .. tostring(err)) end
 end
-print("[Smooth Hub] boot place=" .. tostring(game.PlaceId) .. " job=" .. tostring(game.JobId))
 SH.say("Loading Smooth Hub | Attack on Titan Revolution (" .. (IN_MENU and "Lobby" or "In-game") .. ") ...")
 if type(_G.SmoothHubCleanup) == "function" then pcall(_G.SmoothHubCleanup) end
 local token = {}
@@ -146,21 +147,21 @@ local Cfg = {
     ThunderRange = 10000,   -- Thunder Spears: ยิงเฉพาะไททันที่อยู่ในระยะนี้จากตัวคุณ (สตัด)
     AutoFarmSmart = false,
     FarmMode = "Smart",
-    RefillEnabled = true,
-    AutoGasRefill = true,
+    RefillEnabled = false,
+    AutoGasRefill = false,
     RefillPickBlade = true,
     RefillPickThunder = true,
     SafeFarm = false,
     AutoReload = false,
-    AutoRefillsBlade = true,
-    AutoRefillsThunder = true,
+    AutoRefillsBlade = false,
+    AutoRefillsThunder = false,
     DamageMultiplier = false,
     SafeTime = 32,
     FailSafeAt = 20,
     AutoFailSafe = false,
     Streak = 0,
     NoClip = true,
-    HitAllParts = false,
+    HitAllParts = true,
     FlySpeed = 600,
     StartDelay = 4,
     PartCooldown = 7,
@@ -690,26 +691,6 @@ local okLib, Cascade = pcall(function()
     return loadstring(game:HttpGet("https://github.com/cascadeui/Cascade/releases/latest/download/dist.luau"))()
 end)
 if not okLib or type(Cascade) ~= "table" then
-    -- retry direct release asset + raw mirrors
-    local mirrors = {
-        "https://github.com/cascadeui/Cascade/releases/download/v1.4.0/dist.luau",
-        "https://cdn.jsdelivr.net/gh/cascadeui/Cascade@v1.4.0/dist.luau",
-        "https://raw.githubusercontent.com/cascadeui/Cascade/v1.4.0/dist.luau",
-    }
-    for _, url in ipairs(mirrors) do
-        local ok2, res2 = pcall(function()
-            return loadstring(game:HttpGet(url))()
-        end)
-        if ok2 and type(res2) == "table" then
-            okLib, Cascade = true, res2
-            SH.say("Interface loaded via mirror: " .. url)
-            break
-        end
-    end
-end
-if not okLib or type(Cascade) ~= "table" then
-    warn("[Smooth Hub] Could not load the interface. Check executor HttpGet / internet.")
-    warn("[Smooth Hub] Cascade error: " .. tostring(Cascade))
     SH.say("Could not load the interface. Check your internet connection.")
     SH.dbg("[SmoothHub] โหลด UI ไม่สำเร็จ:", tostring(Cascade))
     pcall(function()
@@ -3278,7 +3259,7 @@ do
         Proxy("AutoFarmSmart", "OnAutoFarmSmart")
     end
     AddFarmToggle(MainForm, "Bypass Farm (No Shadow Ban)",
-        "Auto-jumps while farming so your gas gets used.",
+        "Auto-jumps while farming; does not change server-side moderation flags.",
         "SafeFarm", "OnSafeFarm")
     AddFarmToggle(ReloadForm, "Auto Reload", "Reloads your blades when they run out.", "AutoReload", "OnAutoReload")
     -- ===== Enable [ Auto Refill ] + ดรอปดาวติ๊กได้ทั้ง Blade และ Thunder Spears พร้อมกัน =====
@@ -3535,29 +3516,9 @@ do
         return hb and hb:FindFirstChild("Hit")
     end
     local function NapeOf(titan)
-        if not titan or not titan.Parent then return nil end
-        local ok, result = pcall(function()
-            local hit = HitParts(titan)
-            if hit then
-                local direct = hit:FindFirstChild("Nape") or hit:FindFirstChild("nape")
-                if direct and direct:IsA("BasePart") then return direct end
-                for _, d in ipairs(hit:GetChildren()) do
-                    if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape", 1, true) then
-                        return d
-                    end
-                end
-            end
-            local hb = titan:FindFirstChild("Hitboxes")
-            if hb then
-                for _, d in ipairs(hb:GetDescendants()) do
-                    if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape", 1, true) then
-                        return d
-                    end
-                end
-            end
-            return nil
-        end)
-        if ok then return result end
+        local hit = HitParts(titan)
+        local nape = hit and hit:FindFirstChild("Nape")
+        if nape and nape:IsA("BasePart") then return nape end
         return nil
     end
     local function TitanAlive(titan)
@@ -3765,7 +3726,6 @@ do
         return best
     end
     local function Running()
-        if Cfg.AutoFarm or Cfg.AutoFarmThunder then return false end -- handled by input-driven worker
         if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) or not Farm.CanUseHere() then return false end
         if Farm.Refilling then return false end
         if Farm.FailSafeActive then return false end
@@ -4201,6 +4161,32 @@ do
         end
         pcall(JumpUp)
     end)
+    local centerCache, centerCachePlace = nil, nil
+    local function MapCenter()
+        if centerCache and centerCachePlace == game.PlaceId then return centerCache end
+        local map = workspace:FindFirstChild("Map") or workspace:FindFirstChild("World")
+        local cf, size
+        if map and map:IsA("Model") then
+            local ok, c, sz = pcall(function() return map:GetBoundingBox() end)
+            if ok then cf, size = c, sz end
+        end
+        if not cf then
+            local terrain = workspace:FindFirstChild("Terrain")
+            if terrain then
+                local ok, region = pcall(function() return terrain.MaxExtents end)
+                if ok and region then
+                    local center = (region.Min + region.Max) / 2
+                    if (region.Max - region.Min).Magnitude < 100000 then
+                        centerCache = Vector3.new(center.X * 4, 0, center.Z * 4)
+                    end
+                end
+            end
+        else
+            centerCache = Vector3.new(cf.Position.X, 0, cf.Position.Z)
+        end
+        centerCachePlace = game.PlaceId
+        return centerCache
+    end
     local lastChar, readyAt = nil, 0
     task.spawn(function()
         local lastPick = 0
@@ -4238,46 +4224,23 @@ do
                     lastPick = os.clock()
                     B.Target = PickTitan(root)
                 end
-                -- Hover at map center (does not follow titans)
-                local y = math.max(tonumber(Cfg.FlyHeight) or 230, 150)
-                local MAP_CENTER = Vector3.new(0, y, 0)
-                do
-                    local folder = workspace:FindFirstChild("Titans")
-                    if folder and folder:IsA("Model") then
-                        local ok2, c2 = pcall(function() return select(1, folder:GetBoundingBox()) end)
-                        if ok2 and typeof(c2) == "CFrame" then
-                            MAP_CENTER = Vector3.new(c2.Position.X, y, c2.Position.Z)
-                        end
-                    elseif folder then
-                        local sum, n = Vector3.zero, 0
-                        for _, t in ipairs(folder:GetChildren()) do
-                            if t:IsA("Model") then
-                                local r = t.PrimaryPart or t:FindFirstChild("HumanoidRootPart")
-                                if r then sum = sum + r.Position; n = n + 1 end
-                            end
-                        end
-                        if n > 0 then
-                            local avg = sum / n
-                            MAP_CENTER = Vector3.new(avg.X, y, avg.Z)
-                        end
+                local nape = B.Target and NapeOf(B.Target)
+                local center = MapCenter()
+                if center then
+                    local goal = center + Vector3.new(0, math.max(Cfg.FlyHeight or 150, 0), 0)
+                    local diff = goal - root.Position
+                    local dist = diff.Magnitude
+                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
+                    if dist > 1 then
+                        local step = math.min((Cfg.FlySpeed or 600) * dt, dist)
+                        local newPos = root.Position + diff.Unit * step
+                        root.CFrame = CFrame.new(newPos)
                     end
-                end
-                local goal = MAP_CENTER
-                local diff = goal - root.Position
-                local dist = diff.Magnitude
-                pcall(function()
-                    root.AssemblyLinearVelocity = Vector3.zero
-                    root.AssemblyAngularVelocity = Vector3.zero
-                end)
-                if dist > 2 then
-                    local step = math.min((tonumber(Cfg.FlySpeed) or 600) * dt, dist)
-                    local newPos = root.Position + diff.Unit * step
-                    pcall(function() root.CFrame = CFrame.new(newPos) end)
-                end
-                if B.Target and TitanAlive(B.Target) then
-                    B.Status = "Attacking"
+                    B.Status = (dist <= ARRIVE_DIST) and "Attacking" or "Flying to map center"
                 else
-                    B.Status = "Hovering center / searching"
+                    B.Target = nil
+                    B.Status = "Searching for titans"
+                    pcall(function() root.AssemblyLinearVelocity = Vector3.zero end)
                 end
             end
         end
@@ -4420,41 +4383,7 @@ do
 
 
     -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
-    -- Center hover injected into remote farm path as well.
     Farm.InputStatus="Off"
-    local function HoverMapCenter()
-        local root = MyRoot()
-        if not root then return end
-        local y = math.max(tonumber(Cfg.FlyHeight) or 230, 150)
-        local center = Vector3.new(0, y, 0)
-        local folder = workspace:FindFirstChild("Titans")
-        if folder and folder:IsA("Model") then
-            local ok2, c2 = pcall(function()
-                return select(1, folder:GetBoundingBox())
-            end)
-            if ok2 and typeof(c2) == "CFrame" then
-                center = Vector3.new(c2.Position.X, y, c2.Position.Z)
-            end
-        elseif folder then
-            -- average titan roots if folder is not a Model
-            local sum, n = Vector3.zero, 0
-            for _, t in ipairs(folder:GetChildren()) do
-                if t:IsA("Model") then
-                    local r = t.PrimaryPart or t:FindFirstChild("HumanoidRootPart")
-                    if r then sum = sum + r.Position; n = n + 1 end
-                end
-            end
-            if n > 0 then
-                local avg = sum / n
-                center = Vector3.new(avg.X, y, avg.Z)
-            end
-        end
-        pcall(function()
-            root.AssemblyLinearVelocity = Vector3.zero
-            root.AssemblyAngularVelocity = Vector3.zero
-            root.CFrame = CFrame.new(center)
-        end)
-    end
     local expanded=setmetatable({}, {__mode="k"})
     local function restoreNapes()
         for part,old in pairs(expanded) do
@@ -4498,11 +4427,10 @@ do
                 end
                 if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
                 if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
-                HoverMapCenter()
                 if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
                     Farm.InputStatus="Paused by refill/fail-safe"; return
                 end
-                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+0.15 end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.8 end
                 if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
                 if NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded network queue"; return end
                 local batch={}
@@ -4907,11 +4835,11 @@ do
         [15824912319]     = { "Unclimbable", "Props", "HQ" },
         [126678335159530] = { "Unclimbable", "Reloads" },
     }
-    local EMPTY_WAIT = 0.05
+    local EMPTY_WAIT = 0
     local TRIES = 2
     local CHECK_WAIT = 3
-    local COOLDOWN = 0.4
-    local RETRY_AFTER_FAIL = 0.25
+    local COOLDOWN = 0.5
+    local RETRY_AFTER_FAIL = 1
     local lastRefill = -999
     local function Log(...) print("[SmoothHub][Refill]", ...) end
     local Status = "Idle"
@@ -5035,52 +4963,29 @@ do
     end
     local function RemoteRefill(station,need,report)
         if remoteRefillBusy or os.clock()<remoteRefillNextAt then return false end
+        if not station or not station.Parent then report("Refill station not replicated"); return false end
         local post
-        pcall(function()
-            local assets = ReplicatedStorage:FindFirstChild("Assets")
-            local remotes = assets and assets:FindFirstChild("Remotes")
-            post = remotes and remotes:FindFirstChild("POST")
+        pcall(function() post=ReplicatedStorage.Assets.Remotes:FindFirstChild("POST") end)
+        if not post or not post:IsA("RemoteEvent") then report("Refill RemoteEvent unavailable"); return false end
+        remoteRefillBusy=true; remoteRefillNextAt=os.clock()+0.5
+        Farm.Refilling=true
+        local beforeGas=ReadGas()
+        local neededBefore=need()
+        local ok,err=pcall(function()
+            post:FireServer("Attacks","Reload",station)
         end)
-        if not post or not post:IsA("RemoteEvent") then
-            report("Refill RemoteEvent unavailable")
-            return false
-        end
-        remoteRefillBusy = true
-        remoteRefillNextAt = os.clock() + 0.35
-        Farm.Refilling = true
-        local beforeGas = ReadGas()
-        local neededBefore = false
-        pcall(function() neededBefore = need() and true or false end)
-        local ok, err = pcall(function()
-            if station and station.Parent then
-                post:FireServer("Attacks", "Reload", station)
-            else
-                -- no station replicated: still request reload remotely (distance independent)
-                post:FireServer("Attacks", "Reload")
-            end
-        end)
-        local confirmed = false
+        local confirmed=false
         if ok then
-            local untilAt = os.clock() + 0.9
-            while Alive() and os.clock() < untilAt do
-                local stillNeed = false
-                pcall(function() stillNeed = need() and true or false end)
-                local gas = ReadGas()
-                if (neededBefore and not stillNeed) or (beforeGas and gas and gas > beforeGas) then
-                    confirmed = true
-                    break
-                end
-                task.wait(0.08)
+            local untilAt=os.clock()+4
+            while Alive() and os.clock()<untilAt do
+                local gas=ReadGas()
+                if (neededBefore and not need()) or (beforeGas and gas and gas>beforeGas) then confirmed=true; break end
+                task.wait(.2)
             end
         end
-        Farm.Refilling = false
-        remoteRefillBusy = false
-        if not ok then
-            report("Refill error: " .. tostring(err))
-            return false
-        end
-        report(confirmed and "Refill resource change observed" or "Remote refill sent (any distance)")
-        return true
+        Farm.Refilling=false; remoteRefillBusy=false
+        report(not ok and ("Refill error: "..tostring(err)) or (confirmed and "Refill resource change observed" or "Remote refill sent; no resource increase confirmed"))
+        return confirmed
     end
     local function DoRefill()
         local root=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -5170,12 +5075,12 @@ do
     end
     task.spawn(function()
         while Alive() do
-            task.wait(0.25)
+            task.wait(0.1)
             if Cfg.AutoGasRefill and Farm.CanUseHere() and not Farm.Refilling then
                 local gas,maximum=ReadGas()
                 if not gas or not maximum then
                     Farm.GasStatus="Gas maintenance unavailable: readable current/max gas attributes not found"
-                elseif gas/maximum<=0.95 then
+                elseif gas/maximum<=.25 then
                     Farm.GasStatus="Requesting remote gas refill"
                     if WaveFolder() then DoWaveRefill() else DoRefill() end
                 else Farm.GasStatus="Gas above refill threshold" end
@@ -5188,7 +5093,7 @@ do
         local failStreak = 0      -- เติมไม่สำเร็จติดกันกี่ครั้ง (ล้มเกิน 3 ครั้ง = พักนานขึ้น ไม่บินวนไปหาสถานีจนฟาร์มหยุด)
         local npcBusySince = nil  -- กัน Farm.NpcBusy ค้างจนเติมไม่ได้อีกเลย
         while Alive() do
-            task.wait(0.4)
+            task.wait(0.1)
             if Farm.NpcBusy then
                 npcBusySince = npcBusySince or os.clock()
                 if os.clock() - npcBusySince > 90 and Cfg.AutoRefillWave and SH.PlayOn() and WaveNeed() then
@@ -5264,7 +5169,7 @@ do
     task.spawn(function()
         local since = nil
         while Alive() do
-            task.wait(0.12)
+            task.wait(0.1)
             if Farm.CanUseHere() and not (Cfg.AutoRefillWave and SH.PlayOn() and WaveFolder()) and (NeedBlade() or NeedThunder()) then
                 since = since or os.clock()
                 if os.clock() - since >= EMPTY_WAIT and os.clock() - lastRefill >= COOLDOWN then
@@ -13480,7 +13385,7 @@ local HubConfig = {
     AntiAFK = true,
     AutoRejoin = true,
     AntiAdmin = true,
-    AutoExecute = true,
+    AutoExecute = false,
     CharacterRGB = false,
     EnableFPSLock = false,
     FPSLimit = 144,
@@ -13496,17 +13401,9 @@ SH.SlashTrack(HubConfig,"Hub")
 SH.say("Settings loaded.")
 local AUTOEXEC_URL = "https://githubusercontent.smoothhubv1.workers.dev/raw/9949e6715b89f8c1d7b1/Attack-on-Titan-Revolution.lua"
 UiSync.ReloadUrl = AUTOEXEC_URL
-local queueTeleport = nil
-pcall(function()
-    queueTeleport = queue_on_teleport or queueonteleport
-    if not queueTeleport and syn then
-        queueTeleport = syn.queue_on_teleport or syn.queueonteleport
-    end
-    if not queueTeleport and fluxus then
-        queueTeleport = fluxus.queue_on_teleport
-    end
-end)
+local queueTeleport = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
 local AUTOEXEC_LOCK = "SmoothHub/AutoExec.lock"
+local AUTOEXEC_SOURCE = "SmoothHub/AutoExecSource.lua"
 local AUTOEXEC_LOG = "SmoothHub/AutoExec.log"
 local function AutoExecLog(text)
     if not SH.DEV then return end
@@ -13532,6 +13429,15 @@ local function QueueAutoExecute()
         local cur = (getgenv and getgenv().script_key) or script_key
         if type(cur) == "string" and cur ~= "" then AUTOEXEC_KEY_NOW = cur end
     end)
+    if type(writefile) == "function" then
+        pcall(function()
+            if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then makefolder("SmoothHub") end
+            -- Prefer the exact current source supplied by the user, if the executor exposes it.
+            local current = type(readfile) == "function" and type(isfile) == "function"
+                and isfile("Smooth Hub Aotr.txt") and readfile("Smooth Hub Aotr.txt") or nil
+            if type(current) == "string" and #current > 0 then writefile(AUTOEXEC_SOURCE, current) end
+        end)
+    end
     local payload = string.format([[
         local LOG = %q
         local LOCK = %q
@@ -13569,7 +13475,13 @@ local function QueueAutoExecute()
         pcall(function() if getgenv then getgenv().script_key = KEY end end)
         script_key = KEY
         local src, err
+        pcall(function()
+            if type(isfile) == "function" and type(readfile) == "function" and isfile(%q) then
+                src = readfile(%q)
+            end
+        end)
         for i = 1, 5 do
+            if src and #src > 0 then break end
             local ok, res = pcall(function() return game:HttpGet(%q) end)
             if ok and type(res) == "string" and #res > 0 then src = res break end
             err = res
@@ -13580,7 +13492,7 @@ local function QueueAutoExecute()
         if not fn then log("compile failed: " .. tostring(cerr)) return end
         local ok, rerr = pcall(fn)
         log(ok and "script started" or ("script error: " .. tostring(rerr)))
-    ]], AUTOEXEC_LOG, AUTOEXEC_LOCK, SettingsStore.Path("AOTR"), SettingsStore.Path("AOTR"), AUTOEXEC_KEY_NOW, AUTOEXEC_URL)
+    ]], AUTOEXEC_LOG, AUTOEXEC_LOCK, SettingsStore.Path("AOTR"), SettingsStore.Path("AOTR"), AUTOEXEC_KEY_NOW, AUTOEXEC_SOURCE, AUTOEXEC_SOURCE, AUTOEXEC_URL)
     local ok, err = pcall(queueTeleport, payload)
     AutoExecLog(ok and "queued" or ("queue failed: " .. tostring(err)))
     return ok
@@ -13593,39 +13505,18 @@ local function ApplyAutoExecute(on)
         pcall(clear_teleport_queue)
     end
 end
--- force auto execute on after any saved config
-HubConfig.AutoExecute = true
 if HubConfig.AutoExecute then QueueAutoExecute() end
-SH.say("AutoExecute forced ON")
 if type(queueTeleport) == "function" then
     local lastQueuedAt = 0
-    local function requeue(reason)
-        if not HubConfig.AutoExecute then return end
-        if os.clock() - lastQueuedAt < 2 then return end
-        lastQueuedAt = os.clock()
-        AutoExecLog(tostring(reason) .. " - re-queue")
-        if type(clear_teleport_queue) == "function" then pcall(clear_teleport_queue) end
-        QueueAutoExecute()
-    end
     pcall(function()
         LocalPlayer.OnTeleport:Connect(function(state)
-            if not Alive() then return end
-            requeue("teleport started (" .. tostring(state) .. ")")
+            if not Alive() or not HubConfig.AutoExecute then return end
+            if os.clock() - lastQueuedAt < 5 then return end
+            lastQueuedAt = os.clock()
+            AutoExecLog("teleport started (" .. tostring(state) .. ") - re-queue")
+            if type(clear_teleport_queue) == "function" then pcall(clear_teleport_queue) end
+            QueueAutoExecute()
         end)
-    end)
-    pcall(function()
-        TeleportService.TeleportInitFailed:Connect(function()
-            if Alive() then requeue("TeleportInitFailed") end
-        end)
-    end)
-    -- keep queue warm every 30s while AutoExecute is on
-    task.spawn(function()
-        while Alive() do
-            task.wait(30)
-            if HubConfig.AutoExecute then
-                requeue("keepalive")
-            end
-        end
     end)
 end
 local function HopServer()
@@ -18579,4 +18470,4 @@ if SH.DEV then
     _G.SmoothHubFarm = SH.Farm
     _G.SmoothHubSpin = SH.Spin
 end
-SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")
+SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")s
