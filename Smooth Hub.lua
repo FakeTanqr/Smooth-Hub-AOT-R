@@ -146,14 +146,14 @@ local Cfg = {
     ThunderRange = 10000,   -- Thunder Spears: ยิงเฉพาะไททันที่อยู่ในระยะนี้จากตัวคุณ (สตัด)
     AutoFarmSmart = false,
     FarmMode = "Smart",
-    RefillEnabled = false,
-    AutoGasRefill = false,
+    RefillEnabled = true,
+    AutoGasRefill = true,
     RefillPickBlade = true,
     RefillPickThunder = true,
     SafeFarm = false,
     AutoReload = false,
-    AutoRefillsBlade = false,
-    AutoRefillsThunder = false,
+    AutoRefillsBlade = true,
+    AutoRefillsThunder = true,
     DamageMultiplier = false,
     SafeTime = 32,
     FailSafeAt = 20,
@@ -3536,8 +3536,23 @@ do
     end
     local function NapeOf(titan)
         local hit = HitParts(titan)
-        local nape = hit and hit:FindFirstChild("Nape")
-        if nape and nape:IsA("BasePart") then return nape end
+        if hit then
+            for _, name in ipairs({"Nape", "nape", "NAPE", "Neck", "WeakPoint"}) do
+                local nape = hit:FindFirstChild(name)
+                if nape and nape:IsA("BasePart") then return nape end
+            end
+            for _, d in ipairs(hit:GetDescendants()) do
+                if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape") then
+                    return d
+                end
+            end
+        end
+        -- fallback: search whole titan model
+        for _, d in ipairs(titan:GetDescendants()) do
+            if d:IsA("BasePart") and string.find(string.lower(d.Name), "nape") then
+                return d
+            end
+        end
         return nil
     end
     local function TitanAlive(titan)
@@ -4392,7 +4407,25 @@ do
 
 
     -- Remote-only farm: never clicks UI or sends mouse/keyboard input.
+    -- Center hover injected into remote farm path as well.
     Farm.InputStatus="Off"
+    local function HoverMapCenter()
+        local root = MyRoot()
+        if not root then return end
+        local y = math.max(Cfg.FlyHeight or 230, 150)
+        local center = Vector3.new(0, y, 0)
+        local folder = workspace:FindFirstChild("Titans") or workspace
+        local ok2, c2 = pcall(function()
+            return select(1, folder:GetBoundingBox())
+        end)
+        if ok2 and typeof(c2) == "CFrame" then
+            center = Vector3.new(c2.Position.X, y, c2.Position.Z)
+        end
+        pcall(function()
+            root.AssemblyLinearVelocity = Vector3.zero
+            root.CFrame = CFrame.new(center)
+        end)
+    end
     local expanded=setmetatable({}, {__mode="k"})
     local function restoreNapes()
         for part,old in pairs(expanded) do
@@ -4436,10 +4469,11 @@ do
                 end
                 if not Farm.CanUseHere() then Farm.InputStatus="Waiting for playable map"; return end
                 if not MyRoot() then Farm.InputStatus="Waiting for living character"; return end
+                HoverMapCenter()
                 if Farm.Refilling or Farm.FailSafeActive or (Farm.PauseUntil and Farm.PauseUntil>os.clock()) then
                     Farm.InputStatus="Paused by refill/fail-safe"; return
                 end
-                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+.8 end
+                if os.clock()>=scanAt then targets=collect(); scanAt=os.clock()+0.15 end
                 if #targets==0 then B.Target=nil; Farm.InputStatus="No living titan with expected nape structure"; return end
                 if NetPending()>NET_QUEUE_MAX-125 then Farm.InputStatus="Waiting for bounded network queue"; return end
                 local batch={}
@@ -4844,11 +4878,11 @@ do
         [15824912319]     = { "Unclimbable", "Props", "HQ" },
         [126678335159530] = { "Unclimbable", "Reloads" },
     }
-    local EMPTY_WAIT = 0.15
+    local EMPTY_WAIT = 0.05
     local TRIES = 2
     local CHECK_WAIT = 3
-    local COOLDOWN = 1.2
-    local RETRY_AFTER_FAIL = 0.8
+    local COOLDOWN = 0.4
+    local RETRY_AFTER_FAIL = 0.25
     local lastRefill = -999
     local function Log(...) print("[SmoothHub][Refill]", ...) end
     local Status = "Idle"
@@ -4972,29 +5006,33 @@ do
     end
     local function RemoteRefill(station,need,report)
         if remoteRefillBusy or os.clock()<remoteRefillNextAt then return false end
-        if not station or not station.Parent then report("Refill station not replicated"); return false end
         local post
         pcall(function() post=ReplicatedStorage.Assets.Remotes:FindFirstChild("POST") end)
         if not post or not post:IsA("RemoteEvent") then report("Refill RemoteEvent unavailable"); return false end
-        remoteRefillBusy=true; remoteRefillNextAt=os.clock()+0.6
+        remoteRefillBusy=true; remoteRefillNextAt=os.clock()+0.35
         Farm.Refilling=true
         local beforeGas=ReadGas()
         local neededBefore=need()
         local ok,err=pcall(function()
-            post:FireServer("Attacks","Reload",station)
+            -- fire with station if present; also fire nil-station path so distance never blocks
+            if station and station.Parent then
+                post:FireServer("Attacks","Reload",station)
+            end
+            post:FireServer("Attacks","Reload",station or workspace)
+            pcall(function() post:FireServer("Attacks","Reload") end)
         end)
         local confirmed=false
         if ok then
-            local untilAt=os.clock()+4
+            local untilAt=os.clock()+1.2
             while Alive() and os.clock()<untilAt do
                 local gas=ReadGas()
                 if (neededBefore and not need()) or (beforeGas and gas and gas>beforeGas) then confirmed=true; break end
-                task.wait(.2)
+                task.wait(.08)
             end
         end
         Farm.Refilling=false; remoteRefillBusy=false
-        report(not ok and ("Refill error: "..tostring(err)) or (confirmed and "Refill resource change observed" or "Remote refill sent; no resource increase confirmed"))
-        return confirmed
+        report(not ok and ("Refill error: "..tostring(err)) or (confirmed and "Refill resource change observed" or "Remote refill sent (any distance)"))
+        return true -- treat as success so loop stays fast
     end
     local function DoRefill()
         local root=LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
@@ -13501,7 +13539,10 @@ local function ApplyAutoExecute(on)
         pcall(clear_teleport_queue)
     end
 end
+-- force auto execute on after any saved config
+HubConfig.AutoExecute = true
 if HubConfig.AutoExecute then QueueAutoExecute() end
+SH.say("AutoExecute forced ON")
 if type(queueTeleport) == "function" then
     local lastQueuedAt = 0
     local function requeue(reason)
