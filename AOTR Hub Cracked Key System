@@ -8891,8 +8891,6 @@ local ok4, ok5 = xpcall(function(...)
 		FarmModule.AutoClickGap = 0.5
 		FarmModule.LastAutoSlashAt = -999
 		FarmModule.QuietUntil = 0
-		-- how long a remote refill is given to complete before it is counted as failed (seconds)
-		FarmModule.RemoteWait = 5
 		function FarmModule.HoldClicks(sec)
 			FarmModule.QuietUntil = math.max(FarmModule.QuietUntil, os.clock() + (sec or 0))
 		end
@@ -8925,7 +8923,7 @@ local ok4, ok5 = xpcall(function(...)
 			end
 		end
 		function FarmModule.QuietForRemote(after)
-			FarmModule.WaitQuiet(0.6)
+			FarmModule.WaitQuiet(0.3)
 			FarmModule.HoldClicks(after or 2.7)
 		end
 		local cfg
@@ -12016,7 +12014,8 @@ local ok4, ok5 = xpcall(function(...)
 				end
 				return nil
 			end
-			local STATION_FALLBACK = false
+			-- remote in place first (instant); if the server does not take it, hop to the station and do it there
+			local STATION_FALLBACK = true
 			for i = 1, val2 do
 				local char = LocalPlayer.Character
 				local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -12044,29 +12043,26 @@ local ok4, ok5 = xpcall(function(...)
 				local data = isA(getPrompt(inst), inst)
 				local out = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 				local prev = out ~= nil and data ~= nil and (out.Position - data).Magnitude > acc
-				if out then
+				if out and scan() then
 					panel = ("Refilling (%d/%d) remote%s"):format(i, val2, prev and " (far)" or "")
 					watch(data, prev and 6 or 7)
-					local remoteWait = FarmModule.RemoteWait or 5
-					FarmModule.QuietForRemote(remoteWait + 0.3)
+					FarmModule.QuietForRemote(3)
 					local sentOk, sentErr = pcall(function()
-						Hub.Net.Fire(err, "Attacks", "Reload", inst)
+						err:FireServer("Attacks", "Reload", inst)
 					end)
 					wrap(
-						("remote fire | sent=%s err=%s refills=%s station=%s"):format(
+						("remote fire | sent=%s err=%s refills=%s far=%s station=%s"):format(
 							tostring(sentOk),
 							tostring(sentErr),
 							tostring(getRefills()),
+							tostring(prev),
 							inst:GetFullName()
 						)
 					)
-					local remoteDone = cb(remoteWait)
-					if remoteDone then
-						task.wait(cfg)
-						remoteDone = helper()
-					end
+					local remoteDone = sentOk and cb(2.5)
 					FarmModule.ReleaseClicks()
 					if remoteDone then
+						check(true)
 						FarmModule.RefillDoneAt = os.clock()
 						panel = "Refilled"
 						wrap("ok | remote" .. (prev and " (far)" or ""))
@@ -12074,6 +12070,8 @@ local ok4, ok5 = xpcall(function(...)
 						unwatch()
 						return true
 					end
+					check(false)
+					wrap("remote not accepted, going to the station")
 					unwatch()
 				end
 				if not STATION_FALLBACK then
@@ -12118,9 +12116,10 @@ local ok4, ok5 = xpcall(function(...)
 					handler(nil)
 				end
 				task.wait(0.4)
-				pcall(function()
-					Hub.Net.Fire(err, "Attacks", "Reload", inst)
+				local stOk, stErr = pcall(function()
+					err:FireServer("Attacks", "Reload", inst)
 				end)
+				wrap(("station fire | sent=%s err=%s refills=%s"):format(tostring(stOk), tostring(stErr), tostring(getRefills())))
 				local res = cb(t0)
 				if res then
 					task.wait(cfg)
@@ -12342,12 +12341,12 @@ local ok4, ok5 = xpcall(function(...)
 					if not val or scan() then
 						frame = val and "Refilling remote (far)" or "Refilling remote"
 						watch(res, val and 6 or 7)
-						FarmModule.QuietForRemote((FarmModule.RemoteWait or 5) + 0.3)
+						FarmModule.QuietForRemote(2.7)
 						pcall(function()
 							Hub.Net.Fire(entry, "Attacks", "Reload", data)
 						end)
 						local now = os.clock()
-						while os.clock() - now < (FarmModule.RemoteWait or 5) and applySetting() do
+						while os.clock() - now < (val and 1.2 or 2.5) and applySetting() do
 							task.wait(0.2)
 						end
 						FarmModule.ReleaseClicks()
@@ -12415,7 +12414,6 @@ local ok4, ok5 = xpcall(function(...)
 				elseif j == 2 then
 					service(out)
 				elseif entry then
-					FarmModule.QuietForRemote(5.2)
 					pcall(function()
 						Hub.Net.Fire(entry, "Attacks", "Reload", data)
 					end)
@@ -12558,14 +12556,21 @@ local ok4, ok5 = xpcall(function(...)
 				task.wait(0.4)
 				if FarmModule.CanUseHere() and not (Settings.AutoRefillWave and Hub.PlayOn() and isWaves()) and (isAutoRefillsBlade() or isAutoRefillsThunder()) then
 					tmp = tmp or os.clock()
-					if os.clock() - tmp >= val3 and os.clock() - dst >= sorted then
+					if os.clock() - tmp >= 0.5 and os.clock() - dst >= sorted then
 						local val = getRefills()
 						if val ~= nil and val <= 0 then
 							panel = "No Refills left"
 							tmp = os.clock() + 30
 						else
-							local res = update()
-							dst = os.clock() - (res and 0 or (sorted - obj2))
+							local okU, res = pcall(update)
+							if not okU then
+								wrap("refill error: " .. tostring(res))
+								FarmModule.Refilling = false
+								FarmModule.ReleaseClicks()
+								unwatch()
+								res = false
+							end
+							dst = os.clock() - (res and (sorted - 4) or (sorted - obj2))
 							tmp = nil
 						end
 					end
