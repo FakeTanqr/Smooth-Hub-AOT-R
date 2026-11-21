@@ -24818,7 +24818,7 @@ local ok4, ok5 = xpcall(function(...)
 				and getgenv().SmoothHubUrl ~= ""
 				and getgenv().SmoothHubUrl
 			)
-				or ""
+				or "https://raw.githubusercontent.com/FakeTanqr/Smooth-Hub-AOT-R/refs/heads/main/AOTR%20Hub%20Cracked%20Key%20System"
 			Widgets.ReloadUrl = val4
 			local val3 = (getgenv and type(getgenv().SmoothHubFile) == "string" and getgenv().SmoothHubFile) or "SmoothHub/SmoothHub_AOTR.lua"
 			local val2 = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
