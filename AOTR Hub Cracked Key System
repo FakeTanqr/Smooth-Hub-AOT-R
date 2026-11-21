@@ -8926,25 +8926,31 @@ local ok4, ok5 = xpcall(function(...)
 			FarmModule.WaitQuiet(0.3)
 			FarmModule.HoldClicks(after or 2.7)
 		end
-		-- ===== Hover refill: fly above the station, fire the remote every RefillFireGap until Refills drops =====
-		-- UNCALIBRATED tuning values (not read from the game): highest rung first, studs above the station
-		FarmModule.RefillHoverHeights = { 150, 100, 60, 35 }
-		FarmModule.RefillFireGap = 0.2
-		-- the script's own station wait (t0 = 3) is what a refill is given to register
-		FarmModule.RefillRungTime = 3.0
+		-- ===== Hover refill: fly (not teleport) above the station with the ODM hooks held, fire the remote every RefillFireGap until it refills =====
+		-- UNCALIBRATED tuning values (not read from the game): change them if titans / raid boss skills still reach you, or if the server refuses
+		FarmModule.RefillHoverHeights = { 150, 100, 60, 35 } -- studs above the station, highest first
+		FarmModule.RefillFireGap = 0.2 -- seconds between remote fires
+		FarmModule.RefillRungTime = 3.0 -- seconds spent firing at each height before stepping closer
+		FarmModule.RefillFlySpeed = 150 -- studs per second while flying to / from the station
+		FarmModule.RefillFlyAccel = 260 -- studs per second squared (smooth start and stop)
+		FarmModule.RefillUseHooks = true -- hold the ODM hooks (same Q+E press the Bypass Farm uses) while flying and hovering
+		FarmModule.RefillRehookEvery = 2.5 -- seconds; release and press the hooks again, like a player re-hooking
 		FarmModule.RefillHoverOk = nil
+		FarmModule.RefillHooks = false -- true while the refill owns the hooks (stops the farm watchdogs from releasing them)
 		function FarmModule.HoverRefill(opts)
 			local RunService = game:GetService("RunService")
 			local log = opts.log or function() end
 			local char = LocalPlayer.Character
 			local hrp = char and char:FindFirstChild("HumanoidRootPart")
 			local hum = char and char:FindFirstChildOfClass("Humanoid")
-			if not (hrp and hum and hum.Health > 0 and opts.stationPos and opts.remote and opts.isDone and opts.move) then
+			if not (hrp and hum and hum.Health > 0 and opts.stationPos and opts.remote and opts.isDone) then
 				return false
 			end
 			local origin = hrp.Position
 			local gap = FarmModule.RefillFireGap or 0.2
 			local perRung = FarmModule.RefillRungTime or 3
+			local speed = math.max(20, tonumber(FarmModule.RefillFlySpeed) or 150)
+			local accel = math.max(40, tonumber(FarmModule.RefillFlyAccel) or 260)
 			local rungs = {}
 			for _, h in ipairs(FarmModule.RefillHoverHeights) do
 				rungs[#rungs + 1] = h
@@ -8960,41 +8966,118 @@ local ok4, ok5 = xpcall(function(...)
 					end
 				end
 			end
-			local hoverPos, conn = nil, nil
-			local function stopHover()
+			-- ---- flight controller: constant-acceleration flight, velocity always matches the real displacement, small hover drift ----
+			local goal, vNow, conn = nil, 0, nil
+			local flightStart = os.clock()
+			local function stopFlight()
 				if conn then
 					conn:Disconnect()
 					conn = nil
 				end
 			end
-			local function startHover()
-				stopHover()
-				conn = RunService.Heartbeat:Connect(function()
+			local function startFlight()
+				stopFlight()
+				vNow = 0
+				conn = RunService.Heartbeat:Connect(function(dt)
 					local c = LocalPlayer.Character
 					local r = c and c:FindFirstChild("HumanoidRootPart")
-					if not r or not hoverPos then
+					if not r or not goal then
 						return
 					end
+					dt = math.clamp(dt, 0.001, 0.1)
+					local t = os.clock() - flightStart
+					local target = goal + Vector3.new(math.sin(t * 1.1) * 1.2, math.sin(t * 1.7) * 0.6, math.cos(t * 0.9) * 1.2)
+					local cur = r.Position
+					local d = target - cur
+					local dist = d.Magnitude
+					if dist < 0.02 then
+						vNow = 0
+						return
+					end
+					local want = math.min(speed, math.sqrt(2 * accel * dist))
+					vNow = vNow + math.clamp(want - vNow, -accel * dt, accel * dt)
+					local stepLen = math.min(vNow * dt, dist)
+					vNow = math.min(vNow, dist / dt)
+					local dir = d / dist
 					pcall(function()
-						r.AssemblyLinearVelocity = Vector3.zero
-						r.CFrame = CFrame.new(hoverPos)
+						r.CFrame = CFrame.new(cur + dir * stepLen) * (r.CFrame - r.CFrame.Position)
+						r.AssemblyLinearVelocity = dir * (stepLen / dt)
 					end)
 				end)
 			end
+			local function legTime(a, b)
+				return (a - b).Magnitude / speed + 2.5
+			end
+			local function flyTo(p, timeout)
+				goal = p
+				local t0 = os.clock()
+				while os.clock() - t0 < timeout and isAlive() do
+					local c = LocalPlayer.Character
+					local r = c and c:FindFirstChild("HumanoidRootPart")
+					if not r or hum.Health <= 0 then
+						return false
+					end
+					if (r.Position - p).Magnitude <= 3 then
+						return true
+					end
+					task.wait(0.05)
+				end
+				return false
+			end
+			-- ---- ODM hooks: the script's own HookPress / HookRelease (Q + E, camera aimed at the point) ----
+			local hooksOn, lastHook = false, 0
+			local function hookDown(aimAt)
+				if not FarmModule.RefillUseHooks or not FarmModule.HookPress then
+					return
+				end
+				FarmModule.RefillHooks = true
+				pcall(FarmModule.HookPress, aimAt)
+				hooksOn = true
+				lastHook = os.clock()
+			end
+			local function hookUp()
+				if FarmModule.HookRelease then
+					pcall(FarmModule.HookRelease)
+				end
+				hooksOn = false
+			end
+			local function hookCycle(aimAt)
+				if not hooksOn or os.clock() - lastHook < (FarmModule.RefillRehookEvery or 2.5) then
+					return
+				end
+				hookUp()
+				task.wait(0.12)
+				hookDown(aimAt)
+			end
+			-- ---- the refill itself ----
 			local fires, loggedErr = 0, false
 			local function body()
 				for idx = startAt, #rungs do
 					local h = rungs[idx]
-					hoverPos = opts.stationPos + Vector3.new(0, h, 0)
+					local hoverPos = opts.stationPos + Vector3.new(0, h, 0)
 					if idx == startAt then
-						opts.move(hrp, hoverPos)
-						startHover()
+						startFlight()
+						hookDown(opts.stationPos)
+						-- rise first so the approach stays above the ground, then glide over
+						local cur = hrp.Position
+						local rise = Vector3.new(cur.X, math.max(cur.Y, hoverPos.Y), cur.Z)
+						if rise.Y - cur.Y > 3 then
+							flyTo(rise, legTime(cur, rise))
+						end
+					end
+					local here = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+					if not here then
+						return false
+					end
+					if not flyTo(hoverPos, legTime(here.Position, hoverPos)) then
+						log(("hover refill: did not reach height %.0f in time, firing from where I am"):format(h))
 					end
 					local t0 = os.clock()
 					while os.clock() - t0 < perRung and isAlive() do
 						if hum.Health <= 0 or not hrp.Parent then
 							return false
 						end
+						hookCycle(opts.stationPos)
 						fires = fires + 1
 						local ok, e = pcall(function()
 							opts.remote:FireServer(table.unpack(opts.args))
@@ -9010,18 +9093,33 @@ local ok4, ok5 = xpcall(function(...)
 							return true
 						end
 					end
-					log(("hover refill: nothing at height %.0f after %d fires, stepping closer"):format(h, fires))
+					log(("hover refill: nothing at height %.0f after %d fires, gliding closer"):format(h, fires))
 				end
 				FarmModule.RefillHoverOk = nil
 				return false
 			end
 			local ok, res = pcall(body)
-			stopHover()
-			local c2 = LocalPlayer.Character
-			local r2 = c2 and c2:FindFirstChild("HumanoidRootPart")
-			if r2 and hum.Health > 0 then
-				pcall(opts.move, r2, origin)
-			end
+			-- fly home the same way (no teleport), hooks still held until we are back
+			pcall(function()
+				if conn and hum.Health > 0 then
+					local r2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+					if r2 then
+						local cur = r2.Position
+						local over = Vector3.new(origin.X, math.max(origin.Y, cur.Y), origin.Z)
+						flyTo(over, legTime(cur, over))
+						flyTo(origin, legTime(over, origin))
+					end
+				end
+			end)
+			stopFlight()
+			pcall(function()
+				local r3 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+				if r3 then
+					r3.AssemblyLinearVelocity = Vector3.zero
+				end
+			end)
+			hookUp()
+			FarmModule.RefillHooks = false
 			if not ok then
 				log("hover refill error: " .. tostring(res))
 				return false
@@ -9600,7 +9698,7 @@ local ok4, ok5 = xpcall(function(...)
 		task.spawn(function()
 			while isAlive() do
 				task.wait(0.3)
-				if cur6 and (FarmModule.Refilling or FarmModule.NpcBusy or FarmModule.LootBusy) then
+				if cur6 and ((FarmModule.Refilling and not FarmModule.RefillHooks) or FarmModule.NpcBusy or FarmModule.LootBusy) then
 					if FarmModule.HookRelease then
 						pcall(FarmModule.HookRelease)
 					end
@@ -10686,7 +10784,7 @@ local ok4, ok5 = xpcall(function(...)
 					end
 				elseif not save() then
 					BladeState.Target = nil
-					if FarmModule.Refilling or FarmModule.NpcBusy or FarmModule.LootBusy then
+					if (FarmModule.Refilling and not FarmModule.RefillHooks) or FarmModule.NpcBusy or FarmModule.LootBusy then
 						if FarmModule.HookRelease then
 							pcall(FarmModule.HookRelease)
 						end
@@ -12116,8 +12214,7 @@ local ok4, ok5 = xpcall(function(...)
 				end
 				return nil
 			end
-			-- hover remote first; if the server never takes it, fall back to the station
-			local STATION_FALLBACK = true
+			local STATION_FALLBACK = false
 			for i = 1, val2 do
 				local char = LocalPlayer.Character
 				local hum = char and char:FindFirstChildOfClass("Humanoid")
@@ -12145,11 +12242,11 @@ local ok4, ok5 = xpcall(function(...)
 				local data = isA(getPrompt(inst), inst)
 				local out = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 				local prev = out ~= nil and data ~= nil and (out.Position - data).Magnitude > acc
-				if out and data and scan() then
-					panel = ("Refilling (%d/%d) hovering over the station"):format(i, val2)
+				if out and data then
+					panel = ("Refilling (%d/%d) flying over the station"):format(i, val2)
 					FarmModule.Refilling = true
 					watch(data, 25)
-					FarmModule.QuietForRemote(16)
+					FarmModule.QuietForRemote(40)
 					local stationPrompt = getPrompt(inst)
 					local hoverDone = FarmModule.HoverRefill({
 						remote = err,
@@ -12157,14 +12254,10 @@ local ok4, ok5 = xpcall(function(...)
 						stationPos = data,
 						maxAct = stationPrompt and stationPrompt.MaxActivationDistance or nil,
 						isDone = helper,
-						move = function(h, p)
-							service(h, p)
-						end,
 						log = wrap,
 					})
 					FarmModule.ReleaseClicks()
 					if hoverDone then
-						check(true)
 						FarmModule.RefillDoneAt = os.clock()
 						panel = "Refilled"
 						wrap("ok | remote (hover)")
@@ -12172,8 +12265,6 @@ local ok4, ok5 = xpcall(function(...)
 						unwatch()
 						return true
 					end
-					check(false)
-					wrap("hover remote refill failed at every height, going to the station")
 					unwatch()
 				end
 				if not STATION_FALLBACK then
@@ -12218,10 +12309,9 @@ local ok4, ok5 = xpcall(function(...)
 					handler(nil)
 				end
 				task.wait(0.4)
-				local stOk, stErr = pcall(function()
-					err:FireServer("Attacks", "Reload", inst)
+				pcall(function()
+					Hub.Net.Fire(err, "Attacks", "Reload", inst)
 				end)
-				wrap(("station fire | sent=%s err=%s refills=%s"):format(tostring(stOk), tostring(stErr), tostring(getRefills())))
 				local res = cb(t0)
 				if res then
 					task.wait(cfg)
@@ -12444,7 +12534,7 @@ local ok4, ok5 = xpcall(function(...)
 						frame = val and "Refilling remote (far)" or "Refilling remote"
 						watch(res, 25)
 						FarmModule.Refilling = true
-						FarmModule.QuietForRemote(16)
+						FarmModule.QuietForRemote(40)
 						if res then
 							local wavePrompt = getPrompt(data)
 							FarmModule.HoverRefill({
@@ -12454,9 +12544,6 @@ local ok4, ok5 = xpcall(function(...)
 								maxAct = wavePrompt and wavePrompt.MaxActivationDistance or nil,
 								isDone = function()
 									return not applySetting()
-								end,
-								move = function(h, p)
-									step(h, CFrame.new(p))
 								end,
 								log = wrap,
 							})
@@ -12680,6 +12767,7 @@ local ok4, ok5 = xpcall(function(...)
 								wrap("refill error: " .. tostring(res))
 								FarmModule.Refilling = false
 								FarmModule.ReleaseClicks()
+								FarmModule.RefillHooks = false
 								unwatch()
 								res = false
 							end
