@@ -150,7 +150,7 @@ local Cfg = {
     AutoGasRefill = true,
     RefillPickBlade = true,
     RefillPickThunder = true,
-    SafeFarm = true,
+    SafeFarm = false,
     AutoReload = false,
     AutoRefillsBlade = true,
     AutoRefillsThunder = true,
@@ -3811,27 +3811,12 @@ do
     local napeCache,napeCacheAt={},0
     local function EveryNape()
         if os.clock()>=napeCacheAt then
-            napeCacheAt=os.clock()+0.12
-            napeCache={}
+            napeCacheAt=os.clock()+.5; napeCache={}
             local folder=workspace:FindFirstChild("Titans")
-            local list = folder and folder:GetChildren() or {}
-            for _,model in ipairs(list) do
+            for _,model in ipairs(folder and folder:GetDescendants() or {}) do
                 if model:IsA("Model") and TitanAlive(model) then
                     local part=NapeOf(model)
                     if part then napeCache[#napeCache+1]=part end
-                end
-            end
-            -- also catch nested models if any
-            if folder then
-                for _,model in ipairs(folder:GetDescendants()) do
-                    if model:IsA("Model") and TitanAlive(model) then
-                        local part=NapeOf(model)
-                        if part then
-                            local dup=false
-                            for _,e in ipairs(napeCache) do if e==part then dup=true break end end
-                            if not dup then napeCache[#napeCache+1]=part end
-                        end
-                    end
                 end
             end
         end
@@ -3863,23 +3848,20 @@ do
         if netHead > netTail then netHead, netTail = 1, 0 end
     end)
     local function Slash(parts)
-        -- always hit EVERY living nape; distance ignored (remote register)
-        parts = EveryNape()
-        if #parts == 0 then return false end
+        parts=EveryNape()
+        if #parts==0 then return false end
         local remote = Post()
         if not remote then return false end
         if typeof(parts) == "Instance" then parts = { parts } end
         if NetPending() > NET_QUEUE_MAX then return false end
-        local reps = math.max(Reps(#parts), Mult())
-        reps = math.max(1, math.min(reps, 12))
-        if NetPending() + reps * #parts + 2 > NET_QUEUE_MAX then
-            reps = 1
-        end
+        local reps = Reps(#parts)
+        if reps<1 or NetPending()+reps*#parts+2>NET_QUEUE_MAX then return false end
         NetPush(remote, "Attacks", "Slash", true)
         for r = 1, reps do
-            for _, part in ipairs(parts) do
-                -- peak impact / crit-leaning values (high force, tight window)
-                NetPush(remote, "Hitboxes", "Register", part, 180 + math.random() * 15, 0.05 + math.random() * 0.08)
+            for i, part in ipairs(parts) do
+                if PRIORITY[part] or r <= OtherMult() then
+                    NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
+                end
             end
         end
         NetPush(remote, "Attacks", "Slash", false)
@@ -4200,23 +4182,21 @@ do
     end
     task.spawn(function()
         local function active()
-            -- bypass shadowban: keep gas/ODM in air while any farm mode is on
-            return Cfg.SafeFarm and (Cfg.AutoFarm or Cfg.AutoFarmThunder or Cfg.AutoFarmSmart) and Running()
+            return Cfg.SafeFarm and Running() and B.Target
         end
         while Alive() do
             if active() then
-                pcall(PressJump)
-                task.wait(math.max(0.05, (JUMP_GAP or 0.15) * 0.5))
+                pcall(PressJump)                 -- กระโดดครั้งที่ 1 (แตะ)
+                task.wait(JUMP_GAP)
                 if active() then
-                    pcall(JumpDown)
+                    pcall(JumpDown)              -- กระโดดครั้งที่ 2 แล้วกดค้าง
                     local t0 = os.clock()
-                    local hold = math.max(0.35, (JUMP_EVERY or 0.8) * 0.6)
-                    while os.clock() - t0 < hold and active() do task.wait(0.04) end
+                    while os.clock() - t0 < JUMP_EVERY and active() do task.wait(0.05) end
                     pcall(JumpUp)
                 end
             else
                 pcall(JumpUp)
-                task.wait(0.15)
+                task.wait(0.2)
             end
         end
         pcall(JumpUp)
@@ -4343,7 +4323,7 @@ do
                 size = math.floor(BURST_SIZE * MultState.full / DAMAGE_MULT) -- Colossal: x30 = 3 เท่าของชุดปกติ
             end
             for _ = 1, size do
-                NetPush(remote, "Hitboxes", "Register", part, 180 + math.random() * 15, 0.05 + math.random() * 0.08)
+                NetPush(remote, "Hitboxes", "Register", part, 143 + math.random() * 10, 0.26 + math.random() * 0.25)
             end
             total = total + size
         end
@@ -4511,7 +4491,7 @@ do
         local targets={}
         local scanAt=0
         while Alive() do
-            task.wait(.12)
+            task.wait(.4)
             local ok,err=pcall(function()
                 if not (Cfg.AutoFarm or Cfg.AutoFarmThunder) then
                     restoreNapes(); Farm.InputStatus="Off"; B.Status="Off"; return
@@ -13544,7 +13524,6 @@ local function AutoExecLog(text)
 end
 local function QueueAutoExecute()
     if type(queueTeleport) ~= "function" then
-        warn("[Smooth Hub] AutoExecute: queue_on_teleport not supported by this executor")
         AutoExecLog("queue_on_teleport not supported by this executor")
         return false
     end
@@ -13570,8 +13549,13 @@ local function QueueAutoExecute()
         local Players = game:GetService("Players")
         while not Players.LocalPlayer do task.wait() end
         local run = true
-        -- AutoExecute always runs when queued (ignore saved false)
-        run = true
+        pcall(function()
+            if type(isfile) == "function" and isfile(%q) then
+                local data = game:GetService("HttpService"):JSONDecode(readfile(%q))
+                if type(data) == "table" and type(data.Hub) == "table" and data.Hub.AutoExecute == false then run = false end
+            end
+        end)
+        if not run then log("skipped (Auto Execute is off)") return end
         local jobId = tostring(game.JobId)
         pcall(function()
             if jobId ~= "" and type(isfile) == "function" and isfile(LOCK) then
