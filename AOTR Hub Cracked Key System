@@ -8887,6 +8887,42 @@ local ok4, ok5 = xpcall(function(...)
 			FarmModule.ClickSeq = FarmModule.ClickSeq + 1
 			FarmModule.ClickAt = os.clock()
 		end
+		-- auto-slash cadence: every automatic slash (all emitters) shares this one clock
+		FarmModule.AutoClickGap = 0.5
+		FarmModule.LastAutoSlashAt = -999
+		FarmModule.QuietUntil = 0
+		function FarmModule.HoldClicks(sec)
+			FarmModule.QuietUntil = math.max(FarmModule.QuietUntil, os.clock() + (sec or 0))
+		end
+		function FarmModule.AutoClickReady()
+			local now = os.clock()
+			if now < FarmModule.QuietUntil then
+				return false
+			end
+			if now - FarmModule.LastAutoSlashAt < FarmModule.AutoClickGap then
+				return false
+			end
+			FarmModule.LastAutoSlashAt = now
+			return true
+		end
+		-- stop auto slashes, then wait (max maxWait) for the hit queue and the held click to drain
+		function FarmModule.WaitQuiet(maxWait)
+			maxWait = maxWait or 0.6
+			FarmModule.HoldClicks(maxWait + 0.3)
+			local t0 = os.clock()
+			while os.clock() - t0 < maxWait do
+				local pending = FarmModule.HitQueueLen and FarmModule.HitQueueLen() or 0
+				local blades = FarmModule.Blades
+				if pending <= 0 and not (blades and blades.RealClickBusy) then
+					break
+				end
+				task.wait(0.05)
+			end
+		end
+		function FarmModule.QuietForRemote(after)
+			FarmModule.WaitQuiet(0.6)
+			FarmModule.HoldClicks(after or 2.7)
+		end
 		local cfg
 		cfg = UserInputService.InputBegan:Connect(function(key2, key3)
 			if not isAlive() then
@@ -9855,6 +9891,7 @@ local ok4, ok5 = xpcall(function(...)
 		local function scan()
 			return val12 - val11 + 1
 		end
+		FarmModule.HitQueueLen = scan
 		local function check(key5, ...)
 			val12 = val12 + 1
 			val10[val12] = { remote = key5, args = table.pack(...) }
@@ -9910,11 +9947,7 @@ local ok4, ok5 = xpcall(function(...)
 			return true
 		end
 		local function loop()
-			local thunderTargets = Settings.ThunderTargets or 0
-			if thunderTargets <= 0 or thunderTargets >= 200 then
-				return math.huge
-			end
-			return thunderTargets
+			return math.huge
 		end
 		local function retry()
 			return math.huge
@@ -10594,13 +10627,11 @@ local ok4, ok5 = xpcall(function(...)
 					local node = BladeState.Target and getNape(BladeState.Target)
 					if node then
 						BladeState.Status = "Attacking"
-						if os.clock() - (BladeState.LastAutoClick or 0) >= 0.05 then
+						if not BladeState.RealClickBusy and FarmModule.AutoClickReady() then
 							BladeState.LastAutoClick = os.clock()
-							FarmModule.NoteClick()
-						end
-						if not BladeState.RealClickBusy and os.clock() - (BladeState.LastRealClick or 0) >= 0.12 then
-							BladeState.RealClickBusy = true
 							BladeState.LastRealClick = os.clock()
+							FarmModule.NoteClick()
+							BladeState.RealClickBusy = true
 							task.spawn(function()
 								pcall(function()
 									if FarmModule.ClickDown then
@@ -10747,7 +10778,7 @@ local ok4, ok5 = xpcall(function(...)
 							and not Settings.AutoClickHold
 							and (BladeState.HookState == "hooked" or BladeState.HookState == "shooting")
 						then
-							if os.clock() - (BladeState.LastAutoClick or 0) >= 0.4 then
+							if FarmModule.AutoClickReady() then
 								BladeState.LastAutoClick = os.clock()
 								FarmModule.NoteClick()
 							end
@@ -10758,7 +10789,7 @@ local ok4, ok5 = xpcall(function(...)
 							and not Settings.AutoClickHold
 							and (BladeState.Status == "Attacking" or BladeState.HookState == "hooked" or BladeState.HookState == "shooting")
 						then
-							if os.clock() - (BladeState.LastAutoClick or 0) >= 0.4 then
+							if FarmModule.AutoClickReady() then
 								BladeState.LastAutoClick = os.clock()
 								FarmModule.NoteClick()
 							end
@@ -10840,22 +10871,7 @@ local ok4, ok5 = xpcall(function(...)
 						cb(pos, vec, stayTime)
 					elseif pos.Y > val + 3 then
 						cb(pos, vec, stayTime)
-						FarmModule.NoteClick()
-						pcall(function()
-							if FarmModule.ClickDown then
-								FarmModule.ClickDown()
-							end
-						end)
-						task.wait(0.05)
-						pcall(function()
-							if FarmModule.ClickUp then
-								FarmModule.ClickUp()
-							end
-						end)
-					else
-						local obj = vec + Vector3.new(0, stayHeight, 0)
-						if cb(vec, obj, stayTime) then
-							cb(obj, vec, stayTime)
+						if FarmModule.AutoClickReady() then
 							FarmModule.NoteClick()
 							pcall(function()
 								if FarmModule.ClickDown then
@@ -10868,6 +10884,25 @@ local ok4, ok5 = xpcall(function(...)
 									FarmModule.ClickUp()
 								end
 							end)
+						end
+					else
+						local obj = vec + Vector3.new(0, stayHeight, 0)
+						if cb(vec, obj, stayTime) then
+							cb(obj, vec, stayTime)
+							if FarmModule.AutoClickReady() then
+								FarmModule.NoteClick()
+								pcall(function()
+									if FarmModule.ClickDown then
+										FarmModule.ClickDown()
+									end
+								end)
+								task.wait(0.05)
+								pcall(function()
+									if FarmModule.ClickUp then
+										FarmModule.ClickUp()
+									end
+								end)
+							end
 						end
 					end
 				elseif
@@ -11478,9 +11513,11 @@ local ok4, ok5 = xpcall(function(...)
 							inst = ok and res or nil
 						end
 						if inst then
+							FarmModule.WaitQuiet(0.6)
 							local ok, res = pcall(function()
 								return inst:InvokeServer("Blades", "Reload")
 							end)
+							FarmModule.HoldClicks(0.6)
 							FarmModule.LastReload = ok and res or ("error: " .. tostring(res))
 							if ok and res then
 								tmp = 0
@@ -12005,6 +12042,7 @@ local ok4, ok5 = xpcall(function(...)
 				if out then
 					panel = ("Refilling (%d/%d) remote%s"):format(i, val2, prev and " (far)" or "")
 					watch(data, prev and 6 or 7)
+					FarmModule.QuietForRemote(2.7)
 					pcall(function()
 						Hub.Net.Fire(err, "Attacks", "Reload", inst)
 					end)
@@ -12284,6 +12322,7 @@ local ok4, ok5 = xpcall(function(...)
 					if not val or scan() then
 						frame = val and "Refilling remote (far)" or "Refilling remote"
 						watch(res, val and 6 or 7)
+						FarmModule.QuietForRemote(2.7)
 						pcall(function()
 							Hub.Net.Fire(entry, "Attacks", "Reload", data)
 						end)
@@ -12355,6 +12394,7 @@ local ok4, ok5 = xpcall(function(...)
 				elseif j == 2 then
 					service(out)
 				elseif entry then
+					FarmModule.QuietForRemote(5.2)
 					pcall(function()
 						Hub.Net.Fire(entry, "Attacks", "Reload", data)
 					end)
