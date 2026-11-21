@@ -24818,9 +24818,9 @@ local ok4, ok5 = xpcall(function(...)
 				and getgenv().SmoothHubUrl ~= ""
 				and getgenv().SmoothHubUrl
 			)
-				or "https://githubusercontent.smoothhubthailand.workers.dev/raw/880204e3697b860defc7/Attack-On-Titan-Revolution.lua"
+				or ""
 			Widgets.ReloadUrl = val4
-			local val3 = (getgenv and type(getgenv().SmoothHubFile) == "string" and getgenv().SmoothHubFile) or ""
+			local val3 = (getgenv and type(getgenv().SmoothHubFile) == "string" and getgenv().SmoothHubFile) or "SmoothHub/SmoothHub_AOTR.lua"
 			local val2 = queue_on_teleport or (syn and syn.queue_on_teleport) or (fluxus and fluxus.queue_on_teleport)
 			local acc = "SmoothHub/AutoExec.lock"
 			local t0 = "SmoothHub/AutoExec.log"
@@ -24892,19 +24892,6 @@ local ok4, ok5 = xpcall(function(...)
 					end)
 				end
 				local tmp = ""
-				pcall(function()
-					local val = (getgenv and getgenv().script_key) or _G.script_key or shared.script_key or script_key
-					if type(val) == "string" then
-						tmp = val
-					end
-				end)
-				if tmp == "" then
-					pcall(function()
-						if type(isfile) == "function" and isfile("SmoothHub_key.txt") then
-							tmp = (tostring(readfile("SmoothHub_key.txt")):gsub("%s", ""))
-						end
-					end)
-				end
 				local val = (getgenv and tonumber(getgenv().SmoothHubExecDelay)) or 0
 				local text = string.format(
 					'            local LOCK = %q\n            local SETTINGS = %q\n            local URL = %q\n            local KEY = %q\n            local FILE = %q\n            local CACHE = %q\n            local DELAY = tonumber(%q) or 0\n            local print = function() end\n            local function log(text)\n                print("[Smooth Hub][Auto Execute] " .. text)\n                task.spawn(function()\n                    for i = 1, 10 do\n                        local ok = pcall(function()\n                            game:GetService("StarterGui"):SetCore("SendNotification", { Title = "Smooth Hub", Text = "Auto Execute: " .. text, Duration = 6 })\n                        end)\n                        if ok then break end\n                        task.wait(0.5)\n                    end\n                end)\n            end\n            local GENV = (getgenv and getgenv()) or _G\n\n            -- 1) Settings check (file read only, no need to wait for the game)\n            local run = true\n            pcall(function()\n                if type(isfile) == "function" and isfile(SETTINGS) then\n                    local data = game:GetService("HttpService"):JSONDecode(readfile(SETTINGS))\n                    if type(data) == "table" and type(data.Hub) == "table" and data.Hub.AutoExecute == false then run = false end\n                end\n            end)\n            if not run then print("[Smooth Hub][Auto Execute] skipped (Auto Execute is off)") return end\n\n            -- 2) Get + compile the script while the game is still loading\n            local compile = loadstring or load\n            local fn, lastErr, source = nil, nil, "none"\n            local function try(src, name)\n                if type(src) == "string" and src ~= "" then\n                    local f, e = compile(src)\n                    if type(f) == "function" then fn, source = f, name return true end\n                    lastErr = tostring(e or src:sub(1, 200))\n                end\n                return false\n            end\n            local function fromFile(path, name)\n                if path ~= "" and type(isfile) == "function" and isfile(path) then\n                    local okf, srcf = pcall(readfile, path)\n                    if okf then return try(srcf, name) end\n                end\n                return false\n            end\n            if not fromFile(FILE, "local file") then fromFile(CACHE, "cache") end\n            if not fn then\n                for i = 1, 4 do\n                    local ok, res = pcall(function() return game:HttpGet(URL .. (URL:find("?", 1, true) and "&" or "?") .. "t=" .. tostring(os.time())) end)\n                    if ok then\n                        if try(res, "download") then break end\n                    else\n                        lastErr = tostring(res)\n                    end\n                    print("[Smooth Hub][Auto Execute] download attempt " .. i .. " failed: " .. tostring(lastErr))\n                    task.wait(0.5)\n                end\n            end\n            if not fn then log("could not load the script: " .. tostring(lastErr)) return end\n\n            -- 3) Wait only for what is really needed\n            if not game:IsLoaded() then game.Loaded:Wait() end\n            local Players = game:GetService("Players")\n            while not Players.LocalPlayer do task.wait() end\n            if DELAY > 0 then task.wait(DELAY) end\n\n            local jobKey = tostring(game.JobId)\n            if jobKey == "" then jobKey = "place" .. tostring(game.PlaceId) end\n            if GENV.__SmoothHubAutoExec == jobKey then print("[Smooth Hub][Auto Execute] duplicate queue ignored") return end\n            GENV.__SmoothHubAutoExec = jobKey\n\n            local jobId = tostring(game.JobId)\n            pcall(function()\n                if jobId ~= "" and type(isfile) == "function" and isfile(LOCK) then\n                    local id, t = tostring(readfile(LOCK)):match("^(.-)|(%%d+)$")\n                    if id == jobId and t and os.time() - tonumber(t) < 20 then run = false end\n                end\n            end)\n            if not run then print("[Smooth Hub][Auto Execute] skipped (already started in this server)") return end\n            pcall(function()\n                if type(makefolder) == "function" and type(isfolder) == "function" and not isfolder("SmoothHub") then makefolder("SmoothHub") end\n                writefile(LOCK, jobId .. "|" .. tostring(os.time()))\n            end)\n            if KEY ~= "" then\n                pcall(function() if getgenv then getgenv().script_key = KEY end end)\n                pcall(function() _G.script_key = KEY end)\n                pcall(function() shared.script_key = KEY end)\n                script_key = KEY\n            end\n\n            -- 4) Go\n            local ok, rerr = pcall(fn)\n            log(ok and ("script started (" .. source .. ")") or ("script error: " .. tostring(rerr)))\n        ',
