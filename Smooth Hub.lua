@@ -1,8 +1,7 @@
--- https://github.com/DependenciesForAll/DependenciesForAll-DFA/blob/main/Launcher.exe
 -- Remote-only Auto Farm update, based on the supplied original source.
 -- Main/hub first-launch toggles OFF; versioned automatic session saving.
 -- Official Cascade latest endpoint retained. Runtime download still required.
--- Local nape expansion >=500 studs (infinite reach). Damage forced x100 peak. Nape-only hits. AutoExecute hardened.
+-- Local nape expansion >=35 studs. Hover fixed to map center. Remote refill instant/any distance. Nape-only hits. AutoExecute fixed.
 -- Static review only. Local hitbox size does not establish server hit acceptance.
 --[[
 	WARNING: Heads up! This script has not been verified by ScriptBlox. Use at your own risk!
@@ -155,13 +154,13 @@ local Cfg = {
     AutoReload = false,
     AutoRefillsBlade = true,
     AutoRefillsThunder = true,
-    DamageMultiplier = true,
+    DamageMultiplier = false,
     SafeTime = 32,
     FailSafeAt = 20,
     AutoFailSafe = false,
     Streak = 0,
     NoClip = true,
-    HitAllParts = false, -- forced nape-only; do not enable
+    HitAllParts = false,
     FlySpeed = 600,
     StartDelay = 4,
     PartCooldown = 7,
@@ -3501,17 +3500,17 @@ do
     local ORBIT_SPEED = 1.6
     local ORBIT_BOB = 5
     local HIT_COUNT = 10 -- จำนวนไททันที่ฟันหลังคอพร้อมกันต่อรอบ (ตัวหลัก + ตัวใกล้สุดอีก HIT_COUNT-1) | เดิม 9
-    local DAMAGE_MULT = 100
-    local BOSS_MULT = 100 -- ตัวคูณดาเมจใส่ Colossal Titan (ตอนมีบอส) | ไททันตัวเล็กยังใช้ BOSS_SMALL_MULT (x10) | ปรับเลขนี้ได้
-    local OTHER_MULT = 100
+    local DAMAGE_MULT = 10
+    local BOSS_MULT = 10 -- ตัวคูณดาเมจใส่ Colossal Titan (ตอนมีบอส) | ไททันตัวเล็กยังใช้ BOSS_SMALL_MULT (x10) | ปรับเลขนี้ได้
+    local OTHER_MULT = 10
     local RAID_SMALL = HIT_COUNT - 1 -- ตอนมี Colossal: ฟันไททันตัวเล็กได้เต็มโควตาเหมือนตอนไม่มีบอส (เดิม 3 ตัว)
     local BOSS_ALWAYS = true
     local PRIORITY = {}
     local BOSS_NORMAL_HP = 0
     local BOSS_SMALL_MULT = DAMAGE_MULT -- ตอนมี Colossal ไททันตัวเล็กก็โดน x10 เหมือนบอส (เดิม x1)
     local MultState = { full = DAMAGE_MULT, other = OTHER_MULT }
-    local function Mult() return MultState.full end -- forced peak x100 always
-    local function OtherMult() return MultState.full end -- forced peak x100 always
+    local function Mult() return Cfg.DamageMultiplier and MultState.full or 1 end
+    local function OtherMult() return Cfg.DamageMultiplier and math.min(MultState.other, MultState.full) or 1 end
     local B = { Target = nil, Hits = 0, Status = "Idle" }
     Farm.Blades = B
     local post = nil
@@ -4468,7 +4467,7 @@ do
     local function enlarge(part)
         if not expanded[part] then expanded[part]={Size=part.Size,CanCollide=part.CanCollide} end
         local original=expanded[part].Size
-        part.Size=Vector3.new(math.max(500,original.X),math.max(500,original.Y),math.max(500,original.Z))
+        part.Size=Vector3.new(math.max(35,original.X),math.max(35,original.Y),math.max(35,original.Z))
         part.CanCollide=false
     end
     local function collect()
@@ -13481,7 +13480,7 @@ local HubConfig = {
     AntiAFK = true,
     AutoRejoin = true,
     AntiAdmin = true,
-    AutoExecute = true, -- always on
+    AutoExecute = true,
     CharacterRGB = false,
     EnableFPSLock = false,
     FPSLimit = 144,
@@ -13598,26 +13597,6 @@ end
 HubConfig.AutoExecute = true
 if HubConfig.AutoExecute then QueueAutoExecute() end
 SH.say("AutoExecute forced ON")
--- hardened auto-execute: re-queue on character spawn + place load
-pcall(function()
-    if type(queueTeleport) == "function" then
-        local function hardQueue(reason)
-            if not HubConfig.AutoExecute then return end
-            pcall(function() if type(clear_teleport_queue) == "function" then clear_teleport_queue() end end)
-            QueueAutoExecute()
-            AutoExecLog(tostring(reason) .. " - hardQueue")
-        end
-        LocalPlayer.CharacterAdded:Connect(function()
-            task.delay(1, function() hardQueue("CharacterAdded") end)
-        end)
-        game.Loaded:Connect(function()
-            task.delay(0.5, function() hardQueue("game.Loaded") end)
-        end)
-        -- immediate extra queue
-        task.defer(function() hardQueue("boot") end)
-    end
-end)
-
 if type(queueTeleport) == "function" then
     local lastQueuedAt = 0
     local function requeue(reason)
