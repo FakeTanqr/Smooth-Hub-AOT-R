@@ -8891,8 +8891,13 @@ local ok4, ok5 = xpcall(function(...)
 		FarmModule.AutoClickGap = 0.5
 		FarmModule.LastAutoSlashAt = -999
 		FarmModule.QuietUntil = 0
+		-- how long a remote refill is given to complete before it is counted as failed (seconds)
+		FarmModule.RemoteWait = 5
 		function FarmModule.HoldClicks(sec)
 			FarmModule.QuietUntil = math.max(FarmModule.QuietUntil, os.clock() + (sec or 0))
+		end
+		function FarmModule.ReleaseClicks()
+			FarmModule.QuietUntil = 0
 		end
 		function FarmModule.AutoClickReady()
 			local now = os.clock()
@@ -12042,11 +12047,26 @@ local ok4, ok5 = xpcall(function(...)
 				if out then
 					panel = ("Refilling (%d/%d) remote%s"):format(i, val2, prev and " (far)" or "")
 					watch(data, prev and 6 or 7)
-					FarmModule.QuietForRemote(2.7)
-					pcall(function()
+					local remoteWait = FarmModule.RemoteWait or 5
+					FarmModule.QuietForRemote(remoteWait + 0.3)
+					local sentOk, sentErr = pcall(function()
 						Hub.Net.Fire(err, "Attacks", "Reload", inst)
 					end)
-					if cb(2.5) then
+					wrap(
+						("remote fire | sent=%s err=%s refills=%s station=%s"):format(
+							tostring(sentOk),
+							tostring(sentErr),
+							tostring(getRefills()),
+							inst:GetFullName()
+						)
+					)
+					local remoteDone = cb(remoteWait)
+					if remoteDone then
+						task.wait(cfg)
+						remoteDone = helper()
+					end
+					FarmModule.ReleaseClicks()
+					if remoteDone then
 						FarmModule.RefillDoneAt = os.clock()
 						panel = "Refilled"
 						wrap("ok | remote" .. (prev and " (far)" or ""))
@@ -12322,14 +12342,15 @@ local ok4, ok5 = xpcall(function(...)
 					if not val or scan() then
 						frame = val and "Refilling remote (far)" or "Refilling remote"
 						watch(res, val and 6 or 7)
-						FarmModule.QuietForRemote(2.7)
+						FarmModule.QuietForRemote((FarmModule.RemoteWait or 5) + 0.3)
 						pcall(function()
 							Hub.Net.Fire(entry, "Attacks", "Reload", data)
 						end)
 						local now = os.clock()
-						while os.clock() - now < (val and 1.2 or 2.5) and applySetting() do
+						while os.clock() - now < (FarmModule.RemoteWait or 5) and applySetting() do
 							task.wait(0.2)
 						end
+						FarmModule.ReleaseClicks()
 						if not applySetting() then
 							if val then
 								check(true)
