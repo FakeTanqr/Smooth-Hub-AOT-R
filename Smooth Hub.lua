@@ -18470,4 +18470,4 @@ if SH.DEV then
     _G.SmoothHubFarm = SH.Farm
     _G.SmoothHubSpin = SH.Spin
 end
-SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")s
+SH.say("Loaded successfully (" .. (IN_MENU and "Lobby" or "In-game") .. ").")
